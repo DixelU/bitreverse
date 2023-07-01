@@ -7,115 +7,6 @@
 
 namespace dixelu
 {
-namespace details
-{
-
-using byte = unsigned char;
-
-}
-/*
-struct bit_state
-{
-	details::byte length: 3;
-	details::byte valid_flag: 1;
-	details::byte state1: 1;
-	details::byte state2: 1;
-	details::byte state3: 1;
-	details::byte state4: 1;
-
-	bit_state() = default;
-	bit_state(bit_state&&) = default;
-	bit_state(const bit_state&) = default;
-	bit_state& operator=(bit_state&& b)
-	{
-		length = b.length;
-		valid_flag = b.valid_flag;
-		state1 = b.state1;
-		state2 = b.state2;
-		state3 = b.state3;
-		state4 = b.state4;
-		return *this;
-	}
-	bit_state& operator=(const bit_state& b)
-	{
-		length = b.length;
-		valid_flag = b.valid_flag;
-		state1 = b.state1;
-		state2 = b.state2;
-		state3 = b.state3;
-		state4 = b.state4;
-		return *this;
-	}
-
-	constexpr bit_state& operator=(bool override)
-	{
-		length = 1;
-		valid_flag = 1;
-		state1 = override;
-		state2 = override;
-		state3 = override;
-		state4 = override;
-		return *this;
-	}
-
-	struct __state_wrapper
-	{
-		bit_state& state;
-		details::byte index;
-		constexpr __state_wrapper(
-			bit_state& state,
-			details::byte index):
-			state(state),
-			index(index)
-		{
-
-		}
-		constexpr operator bool()
-		{
-			switch(index)
-			{
-				case 0: return state.state1;
-				case 1: return state.state2;
-				case 2: return state.state3;
-				case 3: return state.state4;
-			}
-			return false;
-		}
-		__state_wrapper& operator=(bool value)
-		{
-			switch(index)
-			{
-				case 0: return state.state1 = value, *this;
-				case 1: return state.state2 = value, *this;
-				case 2: return state.state3 = value, *this;
-				case 3: return state.state4 = value, *this;
-			}
-		}
-	};
-
-	constexpr __state_wrapper operator[](details::byte index)
-	{
-		return __state_wrapper(*this, index % 4);
-	}
-
-	constexpr details::byte size() const
-	{
-		return length;
-	}
-
-	constexpr details::byte serialize() const
-	{
-		details::byte value;
-		value = length; value <<= 3;
-		value = valid_flag; value <<= 1;
-		value = state1; value <<= 1;
-		value = state2; value <<= 1;
-		value = state3; value <<= 1;
-		value = state4; value <<= 1;
-		return value;
-	}
-};
-*/
 
 template<typename T>
 struct counted_ptr
@@ -127,7 +18,7 @@ struct counted_ptr
 	};
 
 	counted_ptr(): _base(nullptr) {};
-	counted_ptr(counted_ptr<T>&& p):
+	counted_ptr(counted_ptr<T>&& p) noexcept :
 		_base(p._base)
 	{
 		p._base = nullptr;
@@ -218,7 +109,11 @@ struct counted_ptr
 		return ptr;
 	}
 
+	template<typename U>
+	friend struct enable_counted_from_this;
+
 private:
+	
 
 	void __destroy()
 	{
@@ -240,6 +135,20 @@ counted_ptr<T> make_counted(Args&&... args)
 	return counted_ptr<T>::__make_counted(std::forward<Args>(args)...);
 }
 
+template<typename T>
+struct enable_counted_from_this
+{
+	enable_counted_from_this()
+	{
+
+	}
+	~enable_counted_from_this()
+	{
+		_weak._base = nullptr;
+	}
+private:
+	counted_ptr<T> _weak;
+};
 
 struct bit_states_tracker
 {
@@ -270,8 +179,6 @@ struct bit_states_tracker
 			state3.reset();
 			op = nul_op;
 		}
-
-		explicit operation_status()
 	};
 
 	struct known_fact
@@ -294,7 +201,7 @@ struct bit_states_tracker
 	counted_ptr<known_fact> known_info;
 
 	explicit bit_states_tracker(bool value = false):
-		known_info(make_counted<known_fact>(known_fact::equal, value))
+		known_info(make_counted<known_fact>(known_fact{ known_fact::equal, value }))
 	{
 	}
 
@@ -311,6 +218,13 @@ struct bit_states_tracker
 		value.known_info.reset();
 		value.last_operation.reset();
 	}
+
+	bit_states_tracker& operator|(const bit_states_tracker & value)
+	{
+
+	}
+
+
 };
 
 } // namespace dixelu

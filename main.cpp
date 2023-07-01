@@ -4,7 +4,7 @@
 
 void counted_simple_test()
 {
-    auto t = dixelu::make_counted<int>(1);
+    auto t = dixelu::make_counted<int>(206516);
     auto v = t;
     auto q = v;
 
@@ -14,6 +14,8 @@ void counted_simple_test()
     v = t;
     v = v;
 
+    std::cout << *v << ":" << v.count() << std::endl;
+    std::cout << *t << ":" << t.count() << std::endl;
     std::cout << *q << ":" << q.count() << std::endl;
 }
 
