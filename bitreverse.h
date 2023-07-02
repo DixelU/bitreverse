@@ -1,12 +1,30 @@
 #ifndef _DIXELU_BITREVERSE_H
 #define _DIXELU_BITREVERSE_H
 
+#include <vector>
 #include <utility>
+#include <optional>
 #include <cinttypes>
 #include <type_traits>
 
 namespace dixelu
 {
+
+template<typename T>
+struct counted_ptr;
+
+template<typename T>
+struct enable_counted_from_this
+{
+public:
+	enable_counted_from_this() {}
+	~enable_counted_from_this() { _weak._base = nullptr; }
+	friend struct counted_ptr<T>;
+	counted_ptr<T> counted_from_this() const { return _weak.count() ? _weak : counted_ptr<T>{}; }
+private:
+	void __set_weak(counted_ptr<T>& ptr) const { _weak._base = ptr._base; }
+	mutable counted_ptr<T> _weak;
+};
 
 template<typename T>
 struct counted_ptr
@@ -97,23 +115,35 @@ struct counted_ptr
 		return counted_ptr<Q>();
 	}
 
-	template<class... Args>
-	inline static counted_ptr<T> __make_counted(Args... args)
+	template<typename Q = T, class... Args>
+	inline static counted_ptr<Q> __make_counted(Args... args)
 	{
-		counted_ptr<T> ptr;
+		counted_ptr<Q> ptr;
 
-		ptr._base = new counted_ptr<T>::base{
-			T(std::forward<Args...>(args...)),
+		ptr._base = new counted_ptr<Q>::base{
+			Q(std::forward<Args>(args)...),
 			1 };
+		__assign_counted_from_this(ptr);
 
 		return ptr;
 	}
 
-	template<typename U>
-	friend struct enable_counted_from_this;
-
 private:
-	
+
+	friend enable_counted_from_this<T>;
+
+	template<typename Q = T, class... Args>
+	inline static std::enable_if<(std::is_base_of<enable_counted_from_this<Q>, Q>::value), void*>::type
+		__assign_counted_from_this(counted_ptr<Q>& ptr)
+	{
+		ptr->__set_weak(ptr);
+		return nullptr;
+	}
+
+	friend enable_counted_from_this<T>;
+	template<typename Q = T, class... Args>
+	inline static std::enable_if<(!std::is_base_of<enable_counted_from_this<Q>, Q>::value), void*>::type
+		__assign_counted_from_this(counted_ptr<Q>& ptr) { return nullptr; }
 
 	void __destroy()
 	{
@@ -135,22 +165,8 @@ counted_ptr<T> make_counted(Args&&... args)
 	return counted_ptr<T>::__make_counted(std::forward<Args>(args)...);
 }
 
-template<typename T>
-struct enable_counted_from_this
-{
-	enable_counted_from_this()
-	{
-
-	}
-	~enable_counted_from_this()
-	{
-		_weak._base = nullptr;
-	}
-private:
-	counted_ptr<T> _weak;
-};
-
-struct bit_states_tracker
+struct bit_states_tracker:
+	protected enable_counted_from_this<bit_states_tracker>
 {
 	struct operation_status
 	{
@@ -163,7 +179,7 @@ struct bit_states_tracker
 			/*unary operation 1,*/
 			not_op,
 			/* ternary operation if(1) this = 2, else this = 3 */ 
-			/* is this reverible? */
+			/* is this reversible? */
 			cond_move
 		};
 
@@ -188,42 +204,76 @@ struct bit_states_tracker
 			equal
 		};
 
-		union fact_data
+		struct fact_data
 		{
 			bool value;
 		};
 
 		fact_type type;
 		fact_data data;
+
+		static known_fact is(bool value)
+		{
+			return { .type = equal, .data = {.value = value} };
+		}
 	};
 
+private:
 	counted_ptr<operation_status> last_operation;
-	counted_ptr<known_fact> known_info;
+	std::vector<counted_ptr<known_fact>> known_info;
+public:
 
 	explicit bit_states_tracker(bool value = false):
-		known_info(make_counted<known_fact>(known_fact{ known_fact::equal, value }))
+		known_info(make_counted<known_fact>(known_fact::is(value)))
 	{
 	}
+
+	bit_states_tracker(bit_states_tracker&&) = default;
+	bit_states_tracker(const bit_states_tracker&) = default;
 
 	bit_states_tracker& operator=(const bit_states_tracker& value)
 	{
 		known_info = value.known_info;
 		last_operation = value.last_operation;
+		return *this;
 	}
 
 	bit_states_tracker& operator=(bit_states_tracker&& value)
 	{
-		known_info = value.known_info;
-		last_operation = value.last_operation;
-		value.known_info.reset();
-		value.last_operation.reset();
+		known_info = std::move(value.known_info);
+		last_operation = std::move(value.last_operation);
+		return *this;
 	}
 
-	bit_states_tracker& operator|(const bit_states_tracker & value)
+	bit_states_tracker operator|(const bit_states_tracker& value)
 	{
+		bit_states_tracker bit_result;
 
+		auto rhs_value = __get_known_fact_equal(*this);
+		auto lhs_value = __get_known_fact_equal(value);
+		if (rhs_value && lhs_value)
+			bit_result.known_info.push_back(
+				make_counted<known_fact>(
+					known_fact::is(rhs_value.value() || lhs_value.value())));
+
+		bit_result.last_operation = make_counted<operation_status>(
+			counted_from_this(), 
+			value.counted_from_this(),
+			counted_ptr<bit_states_tracker>{},
+			operation_status::or_op);
+
+		return bit_result;
 	}
 
+private:
+
+	inline static std::optional<bool> __get_known_fact_equal(const bit_states_tracker& value)
+	{
+		for (auto& fact : value.known_info)
+			if (fact->type == known_fact::equal)
+				return fact->data.value;
+		return {};
+	}
 
 };
 
