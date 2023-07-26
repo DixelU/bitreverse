@@ -1,282 +1,336 @@
 #ifndef _DIXELU_BITREVERSE_H
 #define _DIXELU_BITREVERSE_H
 
+#include <array>
+#include <memory>
 #include <vector>
 #include <utility>
 #include <optional>
+#include <stdexcept>
 #include <cinttypes>
 #include <type_traits>
 
+#include "counted_ptr.h"
+
 namespace dixelu
 {
-
-template<typename T>
-struct counted_ptr;
-
-template<typename T>
-struct enable_counted_from_this
+namespace bitreverse
 {
-public:
-	enable_counted_from_this() {}
-	~enable_counted_from_this() { _weak._base = nullptr; }
-	friend struct counted_ptr<T>;
-	counted_ptr<T> counted_from_this() const { return _weak.count() ? _weak : counted_ptr<T>{}; }
-private:
-	void __set_weak(counted_ptr<T>& ptr) const { _weak._base = ptr._base; }
-	mutable counted_ptr<T> _weak;
+
+namespace details
+{
+
+struct bitstate
+{
+	counted_ptr<bitstate> _1;
+	counted_ptr<bitstate> _2;
+	counted_ptr<bitstate> _3;
+
+#ifndef WITHOUT_DEPTH_TRACKING
+	size_t max_depth{0};
+#endif
+
+	std::uint8_t state : 1 {0};
+	std::uint8_t operation : 7 {'='};
 };
 
-template<typename T>
-struct counted_ptr
+std::pair<bool, char> extract_value_and_operation(std::uint8_t opcode)
 {
-	struct base
-	{
-		T _p;
-		std::size_t _c;
-	};
-
-	counted_ptr(): _base(nullptr) {};
-	counted_ptr(counted_ptr<T>&& p) noexcept :
-		_base(p._base)
-	{
-		p._base = nullptr;
-	}
-	counted_ptr(const counted_ptr<T>& p):
-		_base(p._base)
-	{
-		if(_base)
-			_base->_c++;
-	}
-
-	~counted_ptr() { __destroy(); }
-
-	counted_ptr<T>& operator=(counted_ptr<T>&& p)
-	{
-		if (p._base == _base)
-			return *this;
-
-		__destroy();
-		_base = p._base;
-		p._base = nullptr;
-		return *this;
-	}
-
-	counted_ptr<T>& operator=(const counted_ptr<T>& p)
-	{
-		if (p._base == _base)
-			return *this;
-
-		__destroy();
-		_base = p._base;
-		_base->_c++;
-		return *this;
-	}
-
-	operator bool() const
-	{
-		return _base;
-	}
-
-	T& operator*()
-	{
-		return _base->_p;
-	}
-
-	const T& operator*() const
-	{
-		return _base->_p;
-	}
-
-	T* operator->()
-	{
-		return &_base->_p;
-	}
-
-	const T* operator->() const
-	{
-		return &_base->_p;
-	}
-
-	void reset()
-	{
-		__destroy();
-	}
-
-	std::size_t count() const
-	{
-		if (_base)
-			return _base->_c;
-		return 0;
-	}
-
-	template<typename Q>
-	typename std::enable_if<(std::is_base_of<Q, T>::value || std::is_base_of<T, Q>::value), counted_ptr<Q>>::type cast()
-	{
-		return counted_ptr<Q>();
-	}
-
-	template<typename Q = T, class... Args>
-	inline static counted_ptr<Q> __make_counted(Args... args)
-	{
-		counted_ptr<Q> ptr;
-
-		ptr._base = new counted_ptr<Q>::base{
-			Q(std::forward<Args>(args)...),
-			1 };
-		__assign_counted_from_this(ptr);
-
-		return ptr;
-	}
-
-private:
-
-	friend enable_counted_from_this<T>;
-
-	template<typename Q = T, class... Args>
-	inline static std::enable_if<(std::is_base_of<enable_counted_from_this<Q>, Q>::value), void*>::type
-		__assign_counted_from_this(counted_ptr<Q>& ptr)
-	{
-		ptr->__set_weak(ptr);
-		return nullptr;
-	}
-
-	friend enable_counted_from_this<T>;
-	template<typename Q = T, class... Args>
-	inline static std::enable_if<(!std::is_base_of<enable_counted_from_this<Q>, Q>::value), void*>::type
-		__assign_counted_from_this(counted_ptr<Q>& ptr) { return nullptr; }
-
-	void __destroy()
-	{
-		if (_base)
-		{
-			auto& count = --_base->_c;
-			if (!count)
-				delete _base;
-			_base = nullptr;
-		}
-	}
-
-	base* _base;
-};
-
-template<typename T, class... Args>
-counted_ptr<T> make_counted(Args&&... args)
-{
-	return counted_ptr<T>::__make_counted(std::forward<Args>(args)...);
+	bool value = (opcode >> 7);
+	char operation = opcode & 0x7F;
+	return { value, operation };
 }
 
-struct bit_states_tracker:
-	protected enable_counted_from_this<bit_states_tracker>
+constexpr std::array<std::uint8_t, 128> get_operation_args_count()
 {
-	struct operation_status
+	std::array<std::uint8_t, 128> a{};
+	for (auto& el : a)
+		el = 0;
+
+	a['?'] = 3;
+	a['^'] = a['|'] = a['&'] = 2;
+	a['!'] = 1;
+	a['='] = a['*'] /* unknown */ = 0;
+
+	return a;
+}
+
+constexpr auto operation_args_count = get_operation_args_count();
+
+counted_ptr<bitstate> make_bitstate_operation(
+	std::uint8_t opcode,
+	const counted_ptr<bitstate>& val1 = {},
+	const counted_ptr<bitstate>& val2 = {},
+	const counted_ptr<bitstate>& val3 = {})
+{
+	counted_ptr<bitstate> new_state = make_counted<bitstate>();
+	auto [current_value, current_operation] = extract_value_and_operation(opcode);
+
+	const counted_ptr<bitstate>* vals[] = { &val1, &val2, &val3 };
+	bool is_inplace_calculable = current_operation != '*';
+
+	for (size_t i = 0; i < operation_args_count[current_operation]; i++)
 	{
-		enum operation
-		{
-			/*ohnary operation*/
-			nul_op,
-			/*binary opearations 1, 2*/
-			and_op, or_op, xor_op, swap_op,
-			/*unary operation 1,*/
-			not_op,
-			/* ternary operation if(1) this = 2, else this = 3 */ 
-			/* is this reversible? */
-			cond_move
-		};
-
-		counted_ptr<bit_states_tracker> state1;
-		counted_ptr<bit_states_tracker> state2;
-		counted_ptr<bit_states_tracker> state3;
-		operation op;
-
-		void reset()
-		{
-			state1.reset();
-			state2.reset();
-			state3.reset();
-			op = nul_op;
-		}
-	};
-
-	struct known_fact
-	{
-		enum fact_type
-		{
-			equal
-		};
-
-		struct fact_data
-		{
-			bool value;
-		};
-
-		fact_type type;
-		fact_data data;
-
-		static known_fact is(bool value)
-		{
-			return { .type = equal, .data = {.value = value} };
-		}
-	};
-
-private:
-	counted_ptr<operation_status> last_operation;
-	std::vector<counted_ptr<known_fact>> known_info;
-public:
-
-	explicit bit_states_tracker(bool value = false):
-		known_info(make_counted<known_fact>(known_fact::is(value)))
-	{
+		auto& viewed_bitstate = (**vals[i]);
+		if (viewed_bitstate.operation != '=')
+			is_inplace_calculable = false;
 	}
 
-	bit_states_tracker(bit_states_tracker&&) = default;
-	bit_states_tracker(const bit_states_tracker&) = default;
+	if (current_operation == '?' && val1->operation == '=')
+		is_inplace_calculable = true;
 
-	bit_states_tracker& operator=(const bit_states_tracker& value)
+	if (is_inplace_calculable)
 	{
-		known_info = value.known_info;
-		last_operation = value.last_operation;
+		new_state->operation = '=';
+
+		switch (current_operation)
+		{
+		case '|': new_state->state = (val1->state | val2->state); break;
+		case '&': new_state->state = (val1->state & val2->state); break;
+		case '^': new_state->state = (val1->state ^ val2->state); break;
+		case '?': new_state = (val1->state ? val2 : val3); break;
+		case '!': case '~': new_state->state = ~val1->state; break;
+		case '=': new_state->state = current_value; break;
+		default:
+			throw std::logic_error("Unknown operand");
+		}
+	}
+	else
+	{
+		new_state->state = 0;
+		new_state->operation = current_operation;
+		new_state->_1 = val1;
+		new_state->_2 = val2;
+		new_state->_3 = val3;
+
+#ifndef WITHOUT_DEPTH_TRACKING
+		new_state->max_depth = 1 +
+			std::max(
+				(val1 ? val1->max_depth : 0),
+				std::max(
+					(val2 ? val2->max_depth : 0), 
+					(val3 ? val3->max_depth : 0)));
+#endif // !WITHOUT_DEPTH_TRACKING
+	}
+
+	return new_state;
+}
+
+} // namespace details
+
+struct __UNKNOWN__ {};
+
+constexpr __UNKNOWN__ unknown;
+
+struct bit_tracker
+{
+	counted_ptr<details::bitstate> bit_state;
+
+	bit_tracker() : bit_state(details::make_bitstate_operation('=')) {};
+	bit_tracker(const bit_tracker&) = default; 
+	bit_tracker(bit_tracker&&) = default;
+
+	explicit bit_tracker(counted_ptr<details::bitstate>&& state) : bit_state(std::move(state)) {}
+
+	bit_tracker(bool value) : bit_state(details::make_bitstate_operation('=' | (value << 7))) {}
+	bit_tracker(size_t value) : bit_state(details::make_bitstate_operation('=' | (bool(value) << 7))) {}
+
+	bit_tracker& operator=(const bit_tracker& rhs)
+	{
+		bit_state = rhs.bit_state;
 		return *this;
 	}
 
-	bit_states_tracker& operator=(bit_states_tracker&& value)
+	bit_tracker& operator=(bit_tracker&& rhs)
 	{
-		known_info = std::move(value.known_info);
-		last_operation = std::move(value.last_operation);
+		bit_state = std::move(rhs.bit_state);
 		return *this;
 	}
 
-	bit_states_tracker operator|(const bit_states_tracker& value)
+	bit_tracker operator=(__UNKNOWN__ _) { bit_state = details::make_bitstate_operation('*'); return *this; }
+
+	bit_tracker& operator|=(const bit_tracker& rhs)
 	{
-		bit_states_tracker bit_result;
-
-		auto rhs_value = __get_known_fact_equal(*this);
-		auto lhs_value = __get_known_fact_equal(value);
-		if (rhs_value && lhs_value)
-			bit_result.known_info.push_back(
-				make_counted<known_fact>(
-					known_fact::is(rhs_value.value() || lhs_value.value())));
-
-		bit_result.last_operation = make_counted<operation_status>(
-			counted_from_this(), 
-			value.counted_from_this(),
-			counted_ptr<bit_states_tracker>{},
-			operation_status::or_op);
-
-		return bit_result;
+		bit_state = details::make_bitstate_operation('|', bit_state, rhs.bit_state);
+		return *this;
 	}
 
-private:
-
-	inline static std::optional<bool> __get_known_fact_equal(const bit_states_tracker& value)
+	bit_tracker& operator&=(const bit_tracker& rhs)
 	{
-		for (auto& fact : value.known_info)
-			if (fact->type == known_fact::equal)
-				return fact->data.value;
-		return {};
+		bit_state = details::make_bitstate_operation('&', bit_state, rhs.bit_state);
+		return *this;
 	}
 
+	bit_tracker& operator^=(const bit_tracker& rhs)
+	{
+		bit_state = details::make_bitstate_operation('^', bit_state, rhs.bit_state);
+		return *this;
+	}
+
+	bit_tracker operator|(const bit_tracker& rhs) const
+	{
+		bit_tracker tracker = *this;
+		tracker |= rhs;
+		return tracker;
+	}
+
+	bit_tracker operator&(const bit_tracker& rhs) const
+	{
+		bit_tracker tracker = *this;
+		tracker &= rhs;
+		return tracker;
+	}	
+	
+	bit_tracker operator^(const bit_tracker& rhs) const
+	{
+		bit_tracker tracker = *this;
+		tracker ^= rhs;
+		return tracker;
+	}	
+
+	bit_tracker operator~() const
+	{
+		return bit_tracker(details::make_bitstate_operation('~', bit_state));
+	}
+
+	bit_tracker operator!() const
+	{
+		return bit_tracker(details::make_bitstate_operation('!', bit_state));
+	}
 };
 
+bit_tracker execute_ternary_operation(
+	const bit_tracker& source,
+	const bit_tracker& val1,
+	const bit_tracker& val2)
+{
+	return bit_tracker(details::make_bitstate_operation('?', source.bit_state, val1.bit_state, val2.bit_state));
+}
+
+template<size_t N>
+struct int_tracker
+{
+	std::array<bit_tracker, N> bits;
+
+	int_tracker()
+	{
+		for (auto& el : bits)
+			el = false;
+	}
+
+	int_tracker(__UNKNOWN__ unknown_rhs)
+	{
+		for (auto& el : bits)
+			el = unknown_rhs;
+	}
+
+	int_tracker(std::uintmax_t maxint_value)
+	{
+		for (auto& el : bits)
+			el = false;
+
+		for (size_t i = 0; i < N && maxint_value; ++i)
+		{
+			bool value = maxint_value & 1;
+			bits[N - i - 1] = value;
+			maxint_value >>= 1;
+		}
+	}
+
+	int_tracker(bit_tracker bit):
+		int_tracker()
+	{
+		bits.back() = std::move(bit);
+	}
+
+	int_tracker(int_tracker&&) = default;
+	int_tracker(const int_tracker&) = default;
+	int_tracker& operator=(const int_tracker& rhs)
+	{
+		for (size_t i = 0; i < N; ++i)
+			bits[i] = rhs.bits[i];
+		return *this;
+	}
+
+	int_tracker& operator=(int_tracker&& rhs)
+	{
+		for (size_t i = 0; i < N; ++i)
+			bits[i] = std::move(rhs.bits[i]);
+		return *this;
+	}
+
+	int_tracker& operator|=(const int_tracker& rhs)
+	{
+		for (size_t i = 0; i < N; ++i)
+			bits[i] |= rhs.bits[i];
+		return *this;
+	}
+
+	int_tracker& operator&=(const int_tracker& rhs)
+	{
+		for (size_t i = 0; i < N; ++i)
+			bits[i] &= rhs.bits[i];
+		return *this;
+	}
+
+	int_tracker& operator^=(const int_tracker& rhs)
+	{
+		for (size_t i = 0; i < N; ++i)
+			bits[i] &= rhs.bits[i];
+		return *this;
+	}
+
+	int_tracker operator|(const int_tracker& rhs) const
+	{
+		int_tracker copy = *this;
+		copy |= rhs;
+		return copy;
+	}
+
+	int_tracker operator&(const int_tracker& rhs) const
+	{
+		int_tracker copy = *this;
+		copy &= rhs;
+		return copy;
+	}
+
+	int_tracker operator^(const int_tracker& rhs) const
+	{
+		int_tracker copy = *this;
+		copy ^= rhs;
+		return copy;
+	}
+
+	int_tracker operator~() const
+	{
+		int_tracker value = *this;
+		for (size_t i = 0; i < N; ++i)
+			value.bits[i] = ~value.bits[i];
+		return value;
+	}
+
+	int_tracker& operator=(__UNKNOWN__ unknown_rhs)
+	{
+		for (size_t i = 0; i < N; ++i)
+			bits[i] = unknown_rhs;
+		return *this;
+	}
+
+	explicit operator bit_tracker()
+	{
+		bit_tracker result; 
+		for (size_t i = 0; i < N; ++i)
+			result |= bits[i];
+		return result;
+	}
+
+	bit_tracker operator!()
+	{
+		return !(bit_tracker)*this;
+	}
+};
+
+} // namespace bitreverse
 } // namespace dixelu
 
 #endif

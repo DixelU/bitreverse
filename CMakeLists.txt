@@ -3,7 +3,4 @@ project(bitreverse)
 
 set(CMAKE_CXX_STANDARD 20)
 
-add_executable(bitreverse
-        main.cpp
-        bitreverse.h
-        bitreverse.cpp)
+add_executable(bitreverse main.cpp)

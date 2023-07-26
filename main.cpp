@@ -1,6 +1,7 @@
 #include <iostream>
 
 #include "bitreverse.h"
+#include "counted_ptr.h"
 
 void counted_simple_test()
 {
@@ -53,10 +54,22 @@ void counted_test_with_enable_counted_from_this()
     std::cout << v->c << ":" << v.count() << std::endl;
 }
 
+void inplace_calculation_test()
+{
+    dixelu::bitreverse::int_tracker<32> a = 2173, b = 234789, c = 1, u = dixelu::bitreverse::unknown;
+    b = a ^ u | c;
+    a |= b;
+    b ^= c;
+    c = a | b & c;
+    auto bit = (dixelu::bitreverse::bit_tracker)c;
+    std::cout << "Bit depth: " << bit.bit_state->max_depth << std::endl;
+}
+
 int main()
 {
     counted_simple_test();
     counted_test_with_enable_counted_from_this();
+    inplace_calculation_test();
 
     return 0;
 }
