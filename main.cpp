@@ -73,7 +73,7 @@ void inplace_calculation_test()
 template<typename F>
 void hashing_test(size_t string_size, F f)
 {
-    std::cout << std::endl << "Hashing test. String size: " << string_size << std::endl;
+    std::cout << std::endl << "Hashing test. Checking the history depths on string size: " << string_size << std::endl;
 
     std::vector<dixelu::bitreverse::itu8> unknown_string(string_size, dixelu::bitreverse::unknown);
 
@@ -83,6 +83,11 @@ void hashing_test(size_t string_size, F f)
     auto result = f(unknown_string);
 
     std::cout << result.__to_string() << " " << result.__max_depth() << std::endl;
+
+    std::cout << "Result history depths: " << std::endl;
+    for (auto& el : result.bits)
+        std::cout << el.bit_state->max_depth << " ";
+    std::cout << std::endl;
 }
 
 dixelu::bitreverse::itu32 crc32(std::vector<dixelu::bitreverse::itu8> message)
@@ -237,7 +242,7 @@ dixelu::bitreverse::int_tracker<128> md5(std::vector<dixelu::bitreverse::itu8> m
         {
             auto& M_elem = M[j >> 2];
             M_elem = combine(message[j + 3], message[j + 2], message[j + 1], message[j + 0]);
-            std::cout << M_elem.__to_string() << std::endl;
+            //std::cout << M_elem.__to_string() << std::endl;
         }
 
         itu32 A = a0;
@@ -296,10 +301,10 @@ int main()
     counted_test_with_enable_counted_from_this();
     inplace_calculation_test();
     add_substract_test();
-    //hashing_test(16, crc32);
-    //hashing_test(16, md5);
+    hashing_test(32, crc32);
+    hashing_test(32, md5);
 
-    std::cout << md5({'m', 'd', '5'}).__to_string() << std::endl;
+    //std::cout << md5({'m', 'd', '5'}).__to_string() << std::endl;
 
     return 0;
 }

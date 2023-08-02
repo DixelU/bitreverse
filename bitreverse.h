@@ -571,8 +571,10 @@ struct int_tracker
 	size_t __max_depth() const
 	{
 		size_t max_depth = 0;
+#ifndef WITHOUT_DEPTH_TRACKING
 		for (auto& bit : bits)
 			max_depth = std::max(max_depth, bit.bit_state->max_depth);
+#endif
 		return max_depth;
 	}
 };
