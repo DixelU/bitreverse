@@ -5,7 +5,6 @@
 #include <memory>
 #include <vector>
 #include <utility>
-#include <optional>
 #include <stdexcept>
 #include <cinttypes>
 #include <type_traits>
@@ -108,7 +107,7 @@ counted_ptr<bitstate> make_bitstate_operation(
 			std::max(
 				(val1 ? val1->max_depth : 0),
 				std::max(
-					(val2 ? val2->max_depth : 0), 
+					(val2 ? val2->max_depth : 0),
 					(val3 ? val3->max_depth : 0)));
 #endif // !WITHOUT_DEPTH_TRACKING
 	}
@@ -127,7 +126,7 @@ struct bit_tracker
 	counted_ptr<details::bitstate> bit_state;
 
 	bit_tracker() : bit_state(details::make_bitstate_operation('=')) {};
-	bit_tracker(const bit_tracker&) = default; 
+	bit_tracker(const bit_tracker&) = default;
 	bit_tracker(bit_tracker&&) = default;
 
 	explicit bit_tracker(counted_ptr<details::bitstate>&& state) : bit_state(std::move(state)) {}
@@ -179,14 +178,14 @@ struct bit_tracker
 		bit_tracker tracker = *this;
 		tracker &= rhs;
 		return tracker;
-	}	
-	
+	}
+
 	bit_tracker operator^(const bit_tracker& rhs) const
 	{
 		bit_tracker tracker = *this;
 		tracker ^= rhs;
 		return tracker;
-	}	
+	}
 
 	bit_tracker operator~() const
 	{
@@ -318,7 +317,7 @@ struct int_tracker
 
 	explicit operator bit_tracker()
 	{
-		bit_tracker result; 
+		bit_tracker result;
 		for (size_t i = 0; i < N; ++i)
 			result |= bits[i];
 		return result;
@@ -328,6 +327,31 @@ struct int_tracker
 	{
 		return !(bit_tracker)*this;
 	}
+
+    int_tracker& operator<<=(size_t shift)
+    {
+        if(shift >= N)
+            *this = 0;
+
+        for(size_t i = 0; i < N - shift; ++i)
+            bits[i] = std::move(bits[i + shift]);
+        for(size_t i = N - shift; i < N; ++i)
+            bits[i] = false;
+
+        return *this;
+    }
+
+    int_tracker& operator+=(const int_tracker& rhs)
+    {
+        bit_tracker bit = false;
+        for (size_t i = 0; i < N; ++i)
+        {
+            auto& lhs_bit = bits[N - 1 - i];
+            auto& rhs_bit = bits[N - 1 - i];
+
+
+        }
+    }
 };
 
 } // namespace bitreverse

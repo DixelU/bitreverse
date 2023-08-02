@@ -114,7 +114,7 @@ struct counted_ptr
 	{
 		counted_ptr<Q> ptr;
 
-		ptr._base = new counted_ptr<Q>::base{
+		ptr._base = new typename counted_ptr<Q>::base{
 			Q(std::forward<Args>(args)...),
 			1 };
 		__assign_counted_from_this(ptr);
@@ -127,7 +127,7 @@ private:
 	friend enable_counted_from_this<T>;
 
 	template<typename Q = T, class... Args>
-	inline static std::enable_if<(std::is_base_of<enable_counted_from_this<Q>, Q>::value), void*>::type
+	inline static typename std::enable_if<(std::is_base_of<enable_counted_from_this<Q>, Q>::value), void*>::type
 		__assign_counted_from_this(counted_ptr<Q>& ptr)
 	{
 		ptr->__set_weak(ptr);
@@ -136,7 +136,7 @@ private:
 
 	friend enable_counted_from_this<T>;
 	template<typename Q = T, class... Args>
-	inline static std::enable_if<(!std::is_base_of<enable_counted_from_this<Q>, Q>::value), void*>::type
+	inline static typename std::enable_if<(!std::is_base_of<enable_counted_from_this<Q>, Q>::value), void*>::type
 		__assign_counted_from_this(counted_ptr<Q>& ptr) { return nullptr; }
 
 	void __destroy()
