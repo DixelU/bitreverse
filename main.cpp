@@ -162,10 +162,10 @@ void add_substract_test()
     auto ma = -a;
     auto nota = ~a;
 
-    std::cout << apb.__to_string() << std::endl;
-    std::cout << amb.__to_string() << std::endl;
-    std::cout << ma.__to_string() << std::endl;
-    std::cout << nota.__to_string() << std::endl;
+    std::cout << "a + b " << apb.__to_string() << " depth: " << apb.__max_depth() << std::endl;
+    std::cout << "a - b " << amb.__to_string() << " depth: " << amb.__max_depth() << std::endl;
+    std::cout << "-a " << ma.__to_string() << " depth: " << ma.__max_depth() << std::endl;
+    std::cout << "~a " << nota.__to_string() << " depth: " << nota.__max_depth() << std::endl;
 }
 
 dixelu::bitreverse::int_tracker<128> md5(std::vector<dixelu::bitreverse::itu8> message)
@@ -304,7 +304,9 @@ int main()
     hashing_test(32, crc32);
     hashing_test(32, md5);
 
-    //std::cout << md5({'m', 'd', '5'}).__to_string() << std::endl;
+
+
+    std::cout << md5({'m', 'd', '5'}).__to_string() << std::endl;
 
     return 0;
 }
