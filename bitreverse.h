@@ -1,6 +1,7 @@
 #ifndef _DIXELU_BITREVERSE_H
 #define _DIXELU_BITREVERSE_H
 
+#include <set>
 #include <array>
 #include <memory>
 #include <vector>
@@ -20,8 +21,13 @@ namespace details
 {
 
 constexpr bool enable_optimisers = true;
+
+struct universe;
+
 struct bitstate
 {
+	std::set<counted_ptr<universe>> universes;
+
 	counted_ptr<bitstate> _1;
 	counted_ptr<bitstate> _2;
 	counted_ptr<bitstate> _3;
@@ -32,6 +38,23 @@ struct bitstate
 
 	std::uint8_t state : 1 {0};
 	std::uint8_t operation : 7 {'='};
+};
+
+struct universe:
+	enable_counted_from_this<universe>
+{
+	using universe_ptr = counted_ptr<universe>;
+	counted_ptr<universe> parent_universe;
+	counted_ptr<bitstate> linked_state;
+	bool state;
+
+	void purge()
+	{
+		if (linked_state)
+			linked_state->universes.erase(counted_from_this());
+		parent_universe.reset();
+		linked_state.reset();
+	}
 };
 
 constexpr std::pair<bool, char> extract_value_and_operation(std::uint8_t opcode)
@@ -208,7 +231,7 @@ struct bit_tracker
 	explicit constexpr bit_tracker(counted_ptr<details::bitstate>&& state) : bit_state(std::move(state)) {}
 
 	constexpr bit_tracker(bool value) : bit_state(details::make_bitstate_operation('=' | (value << 7))) {}
-	constexpr bit_tracker(size_t value) : bit_state(details::make_bitstate_operation('=' | (bool(value) << 7))) {}
+	//constexpr bit_tracker(size_t value) : bit_state(details::make_bitstate_operation('=' | (bool(value) << 7))) {}
 
 	constexpr bit_tracker& operator=(const bit_tracker& rhs)
 	{
@@ -357,6 +380,9 @@ struct int_tracker
 			bits[i] = rhs.bits[i];
 		return *this;
 	}
+
+	explicit constexpr int_tracker(std::array<bit_tracker, N>&& bits):
+		bits(std::move(bits)) { }
 
 	constexpr self_type& operator=(self_type&& rhs)
 	{
@@ -583,6 +609,18 @@ using itu8 = int_tracker<8>;
 using itu16 = int_tracker<16>;
 using itu32 = int_tracker<32>;
 using itu64 = int_tracker<64>;
+
+template<size_t N>
+void assert_equality(int_tracker<N> lhs, int_tracker<N> rhs)
+{
+
+}
+
+
+void assert_equality(bit_tracker lhs, bit_tracker rhs)
+{
+	return assert_equality(int_tracker<1>(lhs), int_tracker<1>(rhs));
+}
 
 } // namespace bitreverse
 } // namespace dixelu

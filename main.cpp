@@ -295,6 +295,34 @@ dixelu::bitreverse::int_tracker<128> md5(std::vector<dixelu::bitreverse::itu8> m
         itu128(reverse_endianness(d0));
 }
 
+void test()
+{
+    using dixelu::bitreverse::unknown;
+
+    std::vector<dixelu::bitreverse::itu8> hashed_string = { 'm', 'd', '5', unknown, unknown, unknown, unknown };
+    std::array<dixelu::bitreverse::bit_tracker, 128> target_hash
+    { 0,0,0,1,1,0,1,1,1,1,0,0,0,0,1,0,1,0,0,1,1,0,1,1,0,0,1,1,0,1,1,0,1,1,1,1,0,1,1,0,0,
+        0,1,0,0,0,1,1,1,0,1,1,1,0,1,0,1,0,0,0,0,0,1,0,1,0,1,0,1,0,1,0,1,1,1,1,0,1,1,0,0,
+        1,1,1,0,0,1,0,0,1,0,0,1,1,1,1,1,1,0,1,0,0,1,1,1,0,1,1,0,0,0,1,0,1,1,0,0,1,1,1,0,0,0,1,1,0,0,0 };
+    dixelu::bitreverse::int_tracker<128> result(std::move(target_hash));
+
+    dixelu::bitreverse::bit_tracker hashed_string_is_not_ascii;
+    for (auto& itu8 : hashed_string)
+    {
+        hashed_string_is_not_ascii |= dixelu::bitreverse::bit_tracker(itu8 & 0x80); // is beyond ascii
+        hashed_string_is_not_ascii |= 
+            dixelu::bitreverse::bit_tracker((itu8 - 31) & 0x80) &  // is control symbol
+            dixelu::bitreverse::bit_tracker(itu8); // and not zero
+    }
+
+    auto md5_result = md5(hashed_string);
+    auto md5_result_differs = dixelu::bitreverse::bit_tracker(md5_result ^ result);
+    
+    dixelu::bitreverse::assert_equality(md5_result_differs & hashed_string_is_not_ascii, 0);
+
+    std::cout << md5_result.__to_string() << std::endl;
+}
+
 int main()
 {
     counted_simple_test();
@@ -303,10 +331,6 @@ int main()
     add_substract_test();
     hashing_test(32, crc32);
     hashing_test(32, md5);
-
-
-
-    std::cout << md5({'m', 'd', '5'}).__to_string() << std::endl;
 
     return 0;
 }
