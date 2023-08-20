@@ -295,7 +295,7 @@ dixelu::bitreverse::int_tracker<128> md5(std::vector<dixelu::bitreverse::itu8> m
         itu128(reverse_endianness(d0));
 }
 
-void test()
+void real_md5_reversal()
 {
     using dixelu::bitreverse::unknown;
 
@@ -317,10 +317,14 @@ void test()
 
     auto md5_result = md5(hashed_string);
     auto md5_result_differs = dixelu::bitreverse::bit_tracker(md5_result ^ result);
-    
-    dixelu::bitreverse::assert_equality(md5_result_differs & hashed_string_is_not_ascii, 0);
 
+    auto is_false = md5_result_differs & hashed_string_is_not_ascii;
+    
+    dixelu::bitreverse::assert_equality(is_false, 0);
+
+    std::cout << "Real MD5 reversal test" << std::endl;
     std::cout << md5_result.__to_string() << std::endl;
+    std::cout << is_false.bit_state->max_depth << std::endl;
 }
 
 int main()
@@ -331,6 +335,7 @@ int main()
     add_substract_test();
     hashing_test(32, crc32);
     hashing_test(32, md5);
+    real_md5_reversal();
 
     return 0;
 }

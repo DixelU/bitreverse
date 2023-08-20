@@ -2,6 +2,7 @@
 #define _DIXELU_BITREVERSE_H
 
 #include <set>
+#include <map>
 #include <array>
 #include <memory>
 #include <vector>
@@ -45,16 +46,7 @@ struct universe:
 {
 	using universe_ptr = counted_ptr<universe>;
 	counted_ptr<universe> parent_universe;
-	counted_ptr<bitstate> linked_state;
-	bool state;
-
-	void purge()
-	{
-		if (linked_state)
-			linked_state->universes.erase(counted_from_this());
-		parent_universe.reset();
-		linked_state.reset();
-	}
+	std::map<counted_ptr<bitstate>, bool> linked_states;
 };
 
 constexpr std::pair<bool, char> extract_value_and_operation(std::uint8_t opcode)
