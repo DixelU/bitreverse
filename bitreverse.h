@@ -31,7 +31,6 @@ struct bitstate
 
 	counted_ptr<bitstate> _1;
 	counted_ptr<bitstate> _2;
-	counted_ptr<bitstate> _3;
 
 #ifndef WITHOUT_DEPTH_TRACKING
 	size_t max_depth{0};
@@ -62,7 +61,6 @@ constexpr std::array<std::uint8_t, 128> get_operation_args_count()
 	for (auto& el : a)
 		el = 0;
 
-	a['?'] = 3;
 	a['^'] = a['|'] = a['&'] = 2;
 	a['!'] = 1;
 	a['='] = a['*'] /* unknown */ = 0;
@@ -75,14 +73,12 @@ constexpr auto operation_args_count = get_operation_args_count();
 constexpr counted_ptr<bitstate> make_bitstate_operation(
 	std::uint8_t opcode,
 	const counted_ptr<bitstate>& val1 = {},
-	const counted_ptr<bitstate>& val2 = {},
-	const counted_ptr<bitstate>& val3 = {});
+	const counted_ptr<bitstate>& val2 = {});
 
 constexpr bool __call_optimisers(
 	std::uint8_t current_operation,
 	const counted_ptr<bitstate>& val1,
 	const counted_ptr<bitstate>& val2,
-	const counted_ptr<bitstate>& val3,
 	counted_ptr<bitstate>& new_state)
 {
 	switch (current_operation)
@@ -129,14 +125,6 @@ constexpr bool __call_optimisers(
 
 		break;
 	}
-	case '?':
-	{
-		/* optimize constant expressions */
-		if (val1->operation == '=')
-			return new_state = (val1->state ? val2 : val3), true;
-
-		break;
-	}
 	}
 	return false; // optimisation unsuccessfull
 }
@@ -144,13 +132,12 @@ constexpr bool __call_optimisers(
 constexpr counted_ptr<bitstate> make_bitstate_operation(
 	std::uint8_t opcode,
 	const counted_ptr<bitstate>& val1,
-	const counted_ptr<bitstate>& val2,
-	const counted_ptr<bitstate>& val3)
+	const counted_ptr<bitstate>& val2)
 {
 	counted_ptr<bitstate> new_state = make_counted<bitstate>();
 	auto [current_value, current_operation] = extract_value_and_operation(opcode);
 
-	const counted_ptr<bitstate>* vals[] = { &val1, &val2, &val3 };
+	const counted_ptr<bitstate>* vals[] = { &val1, &val2 };
 	bool is_inplace_calculable = current_operation != '*';
 
 	for (size_t i = 0; i < operation_args_count[current_operation]; i++)
@@ -169,7 +156,6 @@ constexpr counted_ptr<bitstate> make_bitstate_operation(
 		case '|': new_state->state = (val1->state | val2->state); break;
 		case '&': new_state->state = (val1->state & val2->state); break;
 		case '^': new_state->state = (val1->state ^ val2->state); break;
-		case '?': new_state = (val1->state ? val2 : val3); break;
 		case '!': 
 		case '~': new_state->state = ~val1->state; break;
 		case '=': new_state->state = current_value; break;
@@ -182,7 +168,7 @@ constexpr counted_ptr<bitstate> make_bitstate_operation(
 		if constexpr (enable_optimisers)
 		{
 			auto optimisation_successfull =
-				__call_optimisers(current_operation, val1, val2, val3, new_state);
+				__call_optimisers(current_operation, val1, val2, new_state);
 			if (optimisation_successfull)
 				return new_state;
 		}
@@ -191,15 +177,13 @@ constexpr counted_ptr<bitstate> make_bitstate_operation(
 		new_state->operation = current_operation;
 		new_state->_1 = val1;
 		new_state->_2 = val2;
-		new_state->_3 = val3;
 
 #ifndef WITHOUT_DEPTH_TRACKING
 		new_state->max_depth = 1 +
 			std::max(
 				(val1 ? val1->max_depth : 0),
-				std::max(
-					(val2 ? val2->max_depth : 0),
-					(val3 ? val3->max_depth : 0)));
+				(val2 ? val2->max_depth : 0)
+			);
 #endif // !WITHOUT_DEPTH_TRACKING
 	}
 
@@ -305,7 +289,8 @@ constexpr bit_tracker execute_ternary_operation(
 	const bit_tracker& val1,
 	const bit_tracker& val2)
 {
-	return bit_tracker(details::make_bitstate_operation('?', source.bit_state, val1.bit_state, val2.bit_state));
+	//return bit_tracker(details::make_bitstate_operation('?', source.bit_state, val1.bit_state, val2.bit_state));
+	return ((!source) & val2) | (source & val1);
 }
 
 template<size_t N>
@@ -602,16 +587,53 @@ using itu16 = int_tracker<16>;
 using itu32 = int_tracker<32>;
 using itu64 = int_tracker<64>;
 
-template<size_t N>
-void assert_equality(int_tracker<N> lhs, int_tracker<N> rhs)
+namespace collision_resolution
 {
+	void __switch_on_current_operation(counted_ptr<details::bitstate>& bit_state)
+	{
+		switch (bit_state->operation)
+		{
 
+		}
+	}
 }
 
 
+void __resolve_bit_collisions(bit_tracker& bit_tracker)
+{
+	for (auto& current_universe : bit_tracker.bit_state->universes)
+	{
+		auto this_universe_state_it = current_universe->linked_states.find(bit_tracker.bit_state);
+		/* sudden realisation: there is no way to optimise away creation of EVERY possible
+		universe. So, in order to resolve the collisions in MD5 algorithm - 
+		i'll need 2^4200 universes (according to last test in the main.cpp)
+		OR i'll need real 4200+ qbit quiantum computer... 
+		*/
+	}
+
+
+}
+
 void assert_equality(bit_tracker lhs, bit_tracker rhs)
 {
-	return assert_equality(int_tracker<1>(lhs), int_tracker<1>(rhs));
+	auto is_not_equal = (lhs ^ rhs);
+
+	auto equality_universe_zeros = make_counted<details::universe>();
+
+	equality_universe_zeros->linked_states[is_not_equal.bit_state] = 0;
+	is_not_equal.bit_state->universes.insert(equality_universe_zeros);
+	is_not_equal.bit_state->universes.insert(equality_universe_zeros);
+	__resolve_bit_collisions(is_not_equal);
+}
+
+template<size_t N>
+void assert_equality(int_tracker<N> lhs, int_tracker<N> rhs)
+{
+	bit_tracker result = 0;
+	for (size_t index = 0; index < N; ++index)
+		result |= (lhs.bits[index] ^ rhs.bits[index]);
+	assert_equality(result, 0);
+	__resolve_bit_collisions(result);
 }
 
 } // namespace bitreverse

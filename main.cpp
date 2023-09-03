@@ -99,45 +99,6 @@ dixelu::bitreverse::itu32 crc32(std::vector<dixelu::bitreverse::itu8> message)
 
     for (auto& ch : message)
     {
-        /*byte = dixelu::bitreverse::itu32(ch);
-
-        std::cout << byte.__to_string() << std::endl;
-        std::cout << crc.__to_string() << std::endl;
-        std::cout << "XOR: " << std::endl;
-        crc = crc ^ byte;
-        std::cout << crc.__to_string() << std::endl;
-
-        for (int j = 7; j >= 0; j--)
-        {
-            std::cout << j << std::endl;
-
-            std::cout << '\t' << crc.__to_string() << std::endl;
-            auto crcn1 = crc & 1;
-            std::cout << '\t' << "CRC AND 1: " << std::endl;
-            std::cout << '\t' << crcn1.__to_string() << std::endl;
-
-            std::cout << '\t' << crcn1.__to_string() << std::endl;
-            std::cout << '\t' << "NEGATE CRCN1: " << std::endl;
-            mask = -crcn1;
-            std::cout << '\t' << mask.__to_string() << std::endl;
-
-            std::cout << '\t' << crc.__to_string() << std::endl;
-            auto crcs1 = crc >> 1;
-            std::cout << '\t' << "SHIFT LEFT CRC: " << std::endl;
-            std::cout << '\t' << crcs1.__to_string() << std::endl;
-
-            std::cout << '\t' << mask_const.__to_string() << std::endl;
-            std::cout << '\t' << mask.__to_string() << std::endl;
-            auto masknmask = mask_const & mask;
-            std::cout << '\t' << "MASKCONST AND MASK: " << std::endl;
-            std::cout << '\t' << masknmask.__to_string() << std::endl;
-
-            std::cout << '\t' << crcs1.__to_string() << std::endl;
-            std::cout << '\t' << masknmask.__to_string() << std::endl;
-            crc = crcs1 ^ masknmask;
-            std::cout << '\t' << "CRCS1 XOR MASKNMASK: " << std::endl;
-            std::cout << '\t' << crc.__to_string() << std::endl;
-        }*/
         byte = dixelu::bitreverse::itu32(ch);
         crc = crc ^ byte;
 
