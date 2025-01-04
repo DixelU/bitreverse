@@ -3,12 +3,14 @@
 
 #include <set>
 #include <map>
+#include <deque>
 #include <array>
 #include <memory>
 #include <vector>
 #include <utility>
 #include <stdexcept>
 #include <cinttypes>
+#include <functional>
 #include <type_traits>
 
 #include "counted_ptr.h"
@@ -156,7 +158,7 @@ constexpr counted_ptr<bitstate> make_bitstate_operation(
 		case '|': new_state->state = (val1->state | val2->state); break;
 		case '&': new_state->state = (val1->state & val2->state); break;
 		case '^': new_state->state = (val1->state ^ val2->state); break;
-		case '!': 
+		case '!':
 		case '~': new_state->state = ~val1->state; break;
 		case '=': new_state->state = current_value; break;
 		default:
@@ -221,7 +223,7 @@ struct bit_tracker
 		return *this;
 	}
 
-	constexpr bit_tracker operator=(__UNKNOWN__ _) 
+	constexpr bit_tracker operator=(__UNKNOWN__ _)
 	{
 		bit_state = details::make_bitstate_operation('*');
 		return *this;
@@ -289,7 +291,6 @@ constexpr bit_tracker execute_ternary_operation(
 	const bit_tracker& val1,
 	const bit_tracker& val2)
 {
-	//return bit_tracker(details::make_bitstate_operation('?', source.bit_state, val1.bit_state, val2.bit_state));
 	return ((!source) & val2) | (source & val1);
 }
 
@@ -589,32 +590,201 @@ using itu64 = int_tracker<64>;
 
 namespace collision_resolution
 {
-	void __switch_on_current_operation(counted_ptr<details::bitstate>& bit_state)
+	std::set<counted_ptr<details::universe>> __create_universes_on_current_operation(
+            const counted_ptr<details::bitstate>& bit_state,
+            bool probable_state)
 	{
+        std::set<counted_ptr<details::universe>> universes;
+
+        auto all_zeros_func = [&universes](
+                const counted_ptr<details::bitstate>& lhs,
+                const counted_ptr<details::bitstate>& rhs)
+        {
+            auto all_zeros = make_counted<details::universe>();
+
+            all_zeros->linked_states[lhs] = false;
+            if(rhs) // for single operand operators.
+                all_zeros->linked_states[rhs] = false;
+
+            universes.insert(std::move(all_zeros));
+        };
+
+        auto all_ones_func = [&universes](
+                const counted_ptr<details::bitstate>& lhs,
+                const counted_ptr<details::bitstate>& rhs)
+        {
+            auto all_zeros = make_counted<details::universe>();
+
+            all_zeros->linked_states[lhs] = true;
+            if(rhs) // for single operand operators.
+                all_zeros->linked_states[rhs] = true;
+
+            universes.insert(std::move(all_zeros));
+        };
+
+        auto lhs_is_greater_func = [&universes](
+                const counted_ptr<details::bitstate>& lhs,
+                const counted_ptr<details::bitstate>& rhs)
+        {
+            auto lhs_is_greater = make_counted<details::universe>();
+
+            lhs_is_greater->linked_states[lhs] = true;
+            lhs_is_greater->linked_states[rhs] = false;
+
+            universes.insert(std::move(lhs_is_greater));
+        };
+
+        auto rhs_is_greater_func = [&lhs_is_greater_func](
+                const counted_ptr<details::bitstate>& lhs,
+                const counted_ptr<details::bitstate>& rhs)
+        {
+            return lhs_is_greater_func(rhs, lhs);
+        };
+
 		switch (bit_state->operation)
 		{
+            case '^':
+            {
+                auto& lhs = bit_state->_1;
+                auto& rhs = bit_state->_2;
 
+                if(!probable_state)
+                {
+                    all_ones_func(lhs, rhs);
+                    all_zeros_func(lhs, rhs);
+                }
+                else
+                {
+                    lhs_is_greater_func(lhs, rhs);
+                    rhs_is_greater_func(lhs, rhs);
+                }
+
+                break;
+            }
+            case '|':
+            {
+                auto& lhs = bit_state->_1;
+                auto& rhs = bit_state->_2;
+
+                if(probable_state)
+                {
+                    all_ones_func(lhs, rhs);
+                    lhs_is_greater_func(lhs, rhs);
+                    rhs_is_greater_func(lhs, rhs);
+                }
+                else
+                    all_zeros_func(lhs, rhs);
+
+                break;
+            }
+            case '&':
+            {
+                auto& lhs = bit_state->_1;
+                auto& rhs = bit_state->_2;
+
+                if(!probable_state)
+                {
+                    all_zeros_func(lhs, rhs);
+                    lhs_is_greater_func(lhs, rhs);
+                    rhs_is_greater_func(lhs, rhs);
+                }
+                else
+                    all_ones_func(lhs, rhs);
+
+                break;
+            }
+            case '!':
+            {
+                auto& arg = bit_state->_1;
+
+                if(probable_state)
+                    all_zeros_func(arg, {});
+                else
+                    all_ones_func(arg, {});
+
+                break;
+            }
+            case '*':
+            {
+                all_zeros_func(bit_state, {});
+                all_ones_func(bit_state, {});
+
+                break;
+            }
+            case '=':
+            {
+                auto value = bit_state->state;
+
+                if(value == probable_state)
+                {
+                    auto all_zeros =
+                            make_counted<details::universe>();
+                    all_zeros->linked_states[bit_state] = value;
+                    universes.insert(std::move(all_zeros));
+                }
+            }
+		}
+
+        return universes;
+	}
+}
+
+void __build_universe_tree_deferred_recursion(
+	counted_ptr<details::bitstate> bit_state,
+	std::reference_wrapper<std::deque<std::function<void()>>> deferred_execution_array_ref)
+{
+	for (auto& current_universe : bit_state->universes)
+	{
+		for(auto& single_state: current_universe->linked_states)
+		{
+			auto new_universes =
+				collision_resolution::__create_universes_on_current_operation(
+					single_state.first,
+					single_state.second);
+
+			for(auto new_universe: new_universes)
+				new_universe->parent_universe = current_universe;
+
+			// todo: handle the lack of new universes (due to incorrect execution path)
+			// todo: save all endpoints (def. unknown/known values)
+
+			auto state_universe_ptr = single_state.first; // force copy
+			state_universe_ptr->universes.insert(new_universes.begin(), new_universes.end());
+
+			deferred_execution_array_ref.get().push_back(std::bind(
+				__build_universe_tree_deferred_recursion,
+				state_universe_ptr,
+				deferred_execution_array_ref));
 		}
 	}
 }
 
+void __build_universal_tree(bit_tracker& bit_tracker)
+{
+	std::deque<std::function<void()>> deferred_execution_array;
+	auto deferred_execution_array_ref = std::ref(deferred_execution_array);
+
+	deferred_execution_array_ref.get().push_back(std::bind(
+		__build_universe_tree_deferred_recursion,
+		bit_tracker.bit_state,
+		deferred_execution_array_ref));
+
+	while(deferred_execution_array.size())
+	{
+		std::cout << (std::to_string(deferred_execution_array.size()) + "\n") << std::flush;
+		deferred_execution_array.front()();
+		deferred_execution_array.pop_front();
+	}
+}
 
 void __resolve_bit_collisions(bit_tracker& bit_tracker)
 {
-	for (auto& current_universe : bit_tracker.bit_state->universes)
-	{
-		auto this_universe_state_it = current_universe->linked_states.find(bit_tracker.bit_state);
-		/* sudden realisation: there is no way to optimise away creation of EVERY possible
-		universe. So, in order to resolve the collisions in MD5 algorithm - 
-		i'll need 2^4200 universes (according to last test in the main.cpp)
-		OR i'll need real 4200+ qbit quiantum computer... 
-		*/
-	}
-
+	__build_universal_tree(bit_tracker);
+	// merge universes from the begining?
 
 }
 
-void assert_equality(bit_tracker lhs, bit_tracker rhs)
+void assert_equality(const bit_tracker& lhs, const bit_tracker& rhs)
 {
 	auto is_not_equal = (lhs ^ rhs);
 
@@ -622,12 +792,11 @@ void assert_equality(bit_tracker lhs, bit_tracker rhs)
 
 	equality_universe_zeros->linked_states[is_not_equal.bit_state] = 0;
 	is_not_equal.bit_state->universes.insert(equality_universe_zeros);
-	is_not_equal.bit_state->universes.insert(equality_universe_zeros);
 	__resolve_bit_collisions(is_not_equal);
 }
 
 template<size_t N>
-void assert_equality(int_tracker<N> lhs, int_tracker<N> rhs)
+void assert_equality(const int_tracker<N>& lhs, const int_tracker<N>& rhs)
 {
 	bit_tracker result = 0;
 	for (size_t index = 0; index < N; ++index)

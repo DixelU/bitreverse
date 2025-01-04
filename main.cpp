@@ -1,6 +1,8 @@
 ﻿#include <iostream>
 
 #include "bitreverse.h"
+#include "bitreverse2.h"
+
 #include "counted_ptr.h"
 
 void counted_simple_test()
@@ -56,9 +58,9 @@ void counted_test_with_enable_counted_from_this()
     std::cout << v->c << ":" << v.count() << std::endl;
 }
 
-void inplace_calculation_test()
+void inplace_calculation_test_1()
 {
-    std::cout << std::endl << "inplace_calculation_test" << std::endl;
+    std::cout << std::endl << "inplace_calculation_test 1" << std::endl;
     dixelu::bitreverse::int_tracker<32> a = 2173, b = 234789, c = 1, u = dixelu::bitreverse::unknown;
     b = a ^ u;
     std::cout << b.__to_string() << std::endl;
@@ -69,11 +71,24 @@ void inplace_calculation_test()
     std::cout << "Bit depth: " << c.__max_depth() << std::endl;
 }
 
+void inplace_calculation_test_2()
+{
+	std::cout << std::endl << "inplace_calculation_test 2" << std::endl;
+	dixelu::bitreverse2::int_tracker<32> a = 2173, b = 234789, c = 1, u = dixelu::bitreverse2::unknown;
+	b = a ^ u;
+	std::cout << b.__to_string() << std::endl;
+	a |= b;
+	b ^= c;
+	c = a | b & c;
+	std::cout << c.__to_string() << std::endl;
+	std::cout << "Bit depth: " << c.__max_depth().second << std::endl;
+}
+
 
 template<typename F>
-void hashing_test(size_t string_size, F f)
+void hashing_test_1(size_t string_size, F f)
 {
-    std::cout << std::endl << "Hashing test. Checking the history depths on string size: " << string_size << std::endl;
+    std::cout << std::endl << "Hashing test 1. Checking the history depths on string size: " << string_size << std::endl;
 
     std::vector<dixelu::bitreverse::itu8> unknown_string(string_size, dixelu::bitreverse::unknown);
 
@@ -90,7 +105,28 @@ void hashing_test(size_t string_size, F f)
     std::cout << std::endl;
 }
 
-dixelu::bitreverse::itu32 crc32(std::vector<dixelu::bitreverse::itu8> message)
+
+template<typename F>
+void hashing_test_2(size_t string_size, F f)
+{
+	std::cout << std::endl << "Hashing test 2. Checking the history depths on string size: " << string_size << std::endl;
+
+	std::vector<dixelu::bitreverse2::itu8> unknown_string(string_size, dixelu::bitreverse2::unknown);
+
+	for (auto& ch : unknown_string)
+		ch &= 0x7F;//ascii symbols
+
+	auto result = f(unknown_string);
+
+	std::cout << result.__to_string() << " " << result.__max_depth() << std::endl;
+
+	std::cout << "Result history depths: " << std::endl;
+	for (auto& el : result.bits)
+		std::cout << el.bit_state->max_depth << " ";
+	std::cout << std::endl;
+}
+
+dixelu::bitreverse::itu32 crc32_1(std::vector<dixelu::bitreverse::itu8> message)
 {
     dixelu::bitreverse::itu32 byte, mask;
 
@@ -111,10 +147,31 @@ dixelu::bitreverse::itu32 crc32(std::vector<dixelu::bitreverse::itu8> message)
     return ~crc;
 }
 
-
-void add_substract_test()
+dixelu::bitreverse2::itu32 crc32_2(std::vector<dixelu::bitreverse2::itu8> message)
 {
-    std::cout << std::endl << "add_substract_test" << std::endl;
+	dixelu::bitreverse2::itu32 byte, mask;
+
+	dixelu::bitreverse2::itu32 crc = 0xFFFFFFFF;
+	const dixelu::bitreverse2::itu32 mask_const = 0xEDB88320;
+
+	for (auto& ch : message)
+	{
+		byte = dixelu::bitreverse2::itu32(ch);
+		crc = crc ^ byte;
+
+		for (int j = 7; j >= 0; j--)
+		{
+			mask = -(crc & 1);
+			crc = (crc >> 1) ^ (mask_const & mask);
+		}
+	}
+	return ~crc;
+}
+
+
+void add_substract_test_1()
+{
+    std::cout << std::endl << "add_substract_test 1" << std::endl;
     dixelu::bitreverse::itu16 a, b;
     a = dixelu::bitreverse::unknown;
     b = 16;
@@ -129,11 +186,31 @@ void add_substract_test()
     std::cout << "~a " << nota.__to_string() << " depth: " << nota.__max_depth() << std::endl;
 }
 
-dixelu::bitreverse::int_tracker<128> md5(std::vector<dixelu::bitreverse::itu8> message)
+
+void add_substract_test_2()
 {
-    using itu128 = dixelu::bitreverse::int_tracker<128>;
-    using itu32 = dixelu::bitreverse::itu32;
-    using itu8 = dixelu::bitreverse::itu8;
+	std::cout << std::endl << "add_substract_test 2" << std::endl;
+	dixelu::bitreverse2::itu16 a, b;
+	a = dixelu::bitreverse2::unknown;
+	b = 16;
+
+	auto apb = a + b;
+	auto amb = a - b;
+	auto ma = -a;
+	auto nota = ~a;
+
+	std::cout << "a + b " << apb.__to_string() << " depth: " << apb.__max_depth_str() << std::endl;
+	std::cout << "a - b " << amb.__to_string() << " depth: " << amb.__max_depth_str() << std::endl;
+	std::cout << "-a " << ma.__to_string() << " depth: " << ma.__max_depth_str() << std::endl;
+	std::cout << "~a " << nota.__to_string() << " depth: " << nota.__max_depth_str() << std::endl;
+}
+
+template<template<size_t> typename int_tracker>
+int_tracker<128> md5(std::vector<int_tracker<8>> message)
+{
+    using itu128 = int_tracker<128>;
+    using itu32 = int_tracker<32>;
+    using itu8 = int_tracker<8>;
 
     constexpr uint8_t s[64] = {
         7, 12, 17, 22,  7, 12, 17, 22,  7, 12, 17, 22,  7, 12, 17, 22,
@@ -288,15 +365,72 @@ void real_md5_reversal()
     std::cout << is_false.bit_state->max_depth << std::endl;
 }
 
+template<size_t N>
+void print_depth(dixelu::bitreverse2::int_tracker<N>& value, std::string str = "")
+{
+	auto [depth, width] = value.__max_depth();
+	std::cout << str << ": [" << depth << ", " << width << "]" << std::endl;
+}
+
+void binary_undef_test()
+{
+	dixelu::bitreverse2::itu8 a = 5, b = 1;
+	auto res = a - b;
+
+	std::cout << "5 - 1: " << res.__to_string() << std::endl;
+	print_depth(res, "5 - 1 depth");
+
+	res = res & dixelu::bitreverse2::unknown;
+	std::cout << "Single unknown bit: " << res.__to_string() << std::endl;
+	print_depth(res, "Single unknown bit depth");
+
+	auto ones = res | 0xFF;
+	std::cout << "All ones: " << ones.__to_string() << std::endl;
+	print_depth(ones, "All ones depth");
+
+	auto smth = res + res;
+	std::cout << "Shifted unknown: " << smth.__to_string() << std::endl;
+	print_depth(res, "Shifted unknown depth");
+}
+
+void undef_xor_undef_test()
+{
+	std::cout << "Undef xor undef test " << std::endl;
+	dixelu::bitreverse2::int_tracker<2> value = dixelu::bitreverse2::unknown;
+	value ^= value;
+
+	std::cout << value.__to_string() << std::endl;
+}
+
+void undef_test()
+{
+	std::cout << "0 - Undef test " << std::endl;
+	dixelu::bitreverse2::int_tracker<5> value = dixelu::bitreverse2::unknown;
+	value = -value;
+
+	std::cout << value.__to_string() << std::endl;
+	print_depth(value, "0 - Undef depth");
+}
+
+//  u  u  u  u
+// ~u ~u ~u ~u <- ~
+//
+
 int main()
 {
-    counted_simple_test();
-    counted_test_with_enable_counted_from_this();
-    inplace_calculation_test();
-    add_substract_test();
-    hashing_test(32, crc32);
-    hashing_test(32, md5);
-    real_md5_reversal();
+	//undef_xor_undef_test();
+	//binary_undef_test();
+	undef_test();
+
+    //counted_simple_test();
+    //counted_test_with_enable_counted_from_this();
+    inplace_calculation_test_1();
+	inplace_calculation_test_2();
+    add_substract_test_1();
+	add_substract_test_2();
+    //hashing_test_1(32, crc32);
+    //hashing_test(32, md5);
+    //real_md5_reversal();
 
     return 0;
 }

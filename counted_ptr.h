@@ -23,19 +23,23 @@ private:
 template<typename T>
 struct counted_ptr
 {
+	using t_type = std::remove_cvref<T>::type;
+
 	struct base
 	{
-		T _p;
+		t_type _p;
 		std::size_t _c;
 	};
 
+	using self_type = counted_ptr<t_type>;
+
 	constexpr counted_ptr() : _base(nullptr) {};
-	constexpr counted_ptr(counted_ptr<T>&& p) noexcept :
+	constexpr counted_ptr(self_type&& p) noexcept :
 		_base(p._base)
 	{
 		p._base = nullptr;
 	}
-	constexpr counted_ptr(const counted_ptr<T>& p) :
+	constexpr counted_ptr(const self_type& p) :
 		_base(p._base)
 	{
 		if (_base)
@@ -44,7 +48,7 @@ struct counted_ptr
 
 	constexpr ~counted_ptr() { __destroy(); }
 
-	constexpr counted_ptr<T>& operator=(counted_ptr<T>&& p)
+	constexpr self_type& operator=(self_type&& p)
 	{
 		if (p._base == _base)
 			return *this;
@@ -55,7 +59,7 @@ struct counted_ptr
 		return *this;
 	}
 
-	constexpr counted_ptr<T>& operator=(const counted_ptr<T>& p)
+	constexpr self_type& operator=(const self_type& p)
 	{
 		if (p._base == _base)
 			return *this;
@@ -71,22 +75,32 @@ struct counted_ptr
 		return _base;
 	}
 
-	constexpr T& operator*()
+	constexpr t_type& operator*()
 	{
 		return _base->_p;
 	}
 
-	constexpr const T& operator*() const
+	constexpr const t_type& operator*() const
 	{
 		return _base->_p;
 	}
 
-	constexpr T* operator->()
+	constexpr bool operator<(const self_type& rhs) const
+	{
+		return _base < rhs._base;
+	}
+
+	constexpr bool operator==(const self_type& rhs) const
+	{
+		return _base == rhs._base;
+	}
+
+	constexpr t_type* operator->()
 	{
 		return &_base->_p;
 	}
 
-	constexpr const T* operator->() const
+	constexpr const t_type* operator->() const
 	{
 		return &_base->_p;
 	}
@@ -104,18 +118,20 @@ struct counted_ptr
 	}
 
 	template<typename Q>
-	constexpr typename std::enable_if<(std::is_base_of<Q, T>::value || std::is_base_of<T, Q>::value), counted_ptr<Q>>::type cast()
+	constexpr typename std::enable_if<
+	    (std::is_base_of<Q, t_type>::value || std::is_base_of<t_type, Q>::value),
+			counted_ptr<Q>>::type cast()
 	{
 		return counted_ptr<Q>();
 	}
 
-	template<typename Q = T, class... Args>
-	inline constexpr static counted_ptr<Q> __make_counted(Args... args)
+	template<class... Args>
+	inline constexpr static self_type __make_counted(Args... args)
 	{
-		counted_ptr<Q> ptr;
+		self_type ptr;
 
-		ptr._base = new typename counted_ptr<Q>::base{
-			Q(std::forward<Args>(args)...),
+		ptr._base = new typename self_type::base{
+			t_type(std::forward<Args>(args)...),
 			1 };
 		__assign_counted_from_this(ptr);
 
@@ -124,9 +140,9 @@ struct counted_ptr
 
 private:
 
-	friend enable_counted_from_this<T>;
+	friend enable_counted_from_this<t_type>;
 
-	template<typename Q = T, class... Args>
+	template<typename Q = t_type, class... Args>
 	inline constexpr static typename std::enable_if<(std::is_base_of<enable_counted_from_this<Q>, Q>::value), void*>::type
 		__assign_counted_from_this(counted_ptr<Q>& ptr)
 	{
@@ -134,10 +150,9 @@ private:
 		return nullptr;
 	}
 
-	friend enable_counted_from_this<T>;
-	template<typename Q = T, class... Args>
+	template<typename Q = t_type, class... Args>
 	inline constexpr static typename std::enable_if<(!std::is_base_of<enable_counted_from_this<Q>, Q>::value), void*>::type
-		__assign_counted_from_this(counted_ptr<Q>& ptr) { return nullptr; }
+		__assign_counted_from_this(counted_ptr<Q>&) { return nullptr; }
 
 	constexpr void __destroy()
 	{
@@ -152,6 +167,7 @@ private:
 
 	base* _base;
 };
+
 
 template<typename T, class... Args>
 constexpr counted_ptr<T> make_counted(Args&&... args)
