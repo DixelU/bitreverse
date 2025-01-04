@@ -118,24 +118,27 @@ void hashing_test_2(size_t string_size, F f)
 
 	auto result = f(unknown_string);
 
-	std::cout << result.__to_string() << " " << result.__max_depth() << std::endl;
+	std::cout << result.__to_string() << " " << result.__max_depth_str() << std::endl;
 
 	std::cout << "Result history depths: " << std::endl;
 	for (auto& el : result.bits)
-		std::cout << el.bit_state->max_depth << " ";
+		std::cout << el._conjunction.size() << " ";
 	std::cout << std::endl;
 }
 
-dixelu::bitreverse::itu32 crc32_1(std::vector<dixelu::bitreverse::itu8> message)
+template<template<size_t> typename int_tracker>
+int_tracker<32> crc32(std::vector<int_tracker<8>> message)
 {
-    dixelu::bitreverse::itu32 byte, mask;
+	int_tracker<32> byte, mask;
 
-    dixelu::bitreverse::itu32 crc = 0xFFFFFFFF;
-    const dixelu::bitreverse::itu32 mask_const = 0xEDB88320;
+	int_tracker<32> crc = 0xFFFFFFFF;
+    const int_tracker<32> mask_const = 0xEDB88320;
 
+	int c = 0;
     for (auto& ch : message)
     {
-        byte = dixelu::bitreverse::itu32(ch);
+		std::cout << ++c << std::endl;
+        byte = int_tracker<32>(ch);
         crc = crc ^ byte;
 
         for (int j = 7; j >= 0; j--)
@@ -146,28 +149,6 @@ dixelu::bitreverse::itu32 crc32_1(std::vector<dixelu::bitreverse::itu8> message)
     }
     return ~crc;
 }
-
-dixelu::bitreverse2::itu32 crc32_2(std::vector<dixelu::bitreverse2::itu8> message)
-{
-	dixelu::bitreverse2::itu32 byte, mask;
-
-	dixelu::bitreverse2::itu32 crc = 0xFFFFFFFF;
-	const dixelu::bitreverse2::itu32 mask_const = 0xEDB88320;
-
-	for (auto& ch : message)
-	{
-		byte = dixelu::bitreverse2::itu32(ch);
-		crc = crc ^ byte;
-
-		for (int j = 7; j >= 0; j--)
-		{
-			mask = -(crc & 1);
-			crc = (crc >> 1) ^ (mask_const & mask);
-		}
-	}
-	return ~crc;
-}
-
 
 void add_substract_test_1()
 {
@@ -418,8 +399,8 @@ void undef_test()
 
 int main()
 {
-	//undef_xor_undef_test();
-	//binary_undef_test();
+	undef_xor_undef_test();
+	binary_undef_test();
 	undef_test();
 
     //counted_simple_test();
@@ -428,7 +409,18 @@ int main()
 	inplace_calculation_test_2();
     add_substract_test_1();
 	add_substract_test_2();
-    //hashing_test_1(32, crc32);
+    hashing_test_1(3, crc32<dixelu::bitreverse::int_tracker>);
+	hashing_test_2(3, crc32<dixelu::bitreverse2::int_tracker>);
+
+	auto res = crc32<dixelu::bitreverse2::int_tracker>({25});
+	std::string res_string = res.__to_string();
+	std::cout << res_string << std::endl;
+
+	/*auto res = crc32<dixelu::bitreverse2::int_tracker>({65, 88});
+	std::string res_string = res.__to_string();
+	std::cout << res_string << std::endl;
+	std::reverse(res_string.begin(), res_string.end());
+	std::cout << res_string << std::endl;*/
     //hashing_test(32, md5);
     //real_md5_reversal();
 

@@ -16,6 +16,8 @@
 
 #include "counted_ptr.h"
 
+#include "btree/set.h"
+
 namespace dixelu::bitreverse2
 {
 
@@ -98,7 +100,7 @@ struct bitstate
 
 	using disj = std::vector<monome>;
 
-	std::set<disj> _conjunction;
+	btree::set<disj> _conjunction;
 
 	bitstate(counted_ptr<bitsource> source) { init(std::move(source)); }
 	bitstate(bool value = false) { init(value ? one : zero); }
@@ -284,7 +286,7 @@ struct bitstate
 		bitstate result(true), temp;
 
 #ifdef DUMB_OPTIMZER_DELIGATION
-		std::set<std::vector<monome>> proto_conjunction;
+		btree::set<std::vector<monome>> proto_conjunction;
 		__internal_cartesian_product(dnf_clauses, proto_conjunction);
 
 		for (auto& disj: proto_conjunction)
@@ -453,18 +455,20 @@ private:
 	// Cartesian product function
 	static void __internal_cartesian_product(
 		const std::vector<std::vector<std::vector<monome>>>& dnf_clauses,
-		std::set<std::vector<monome>>& result)
+		btree::set<std::vector<monome>>& result)
 	{
 		if (dnf_clauses.empty())
 			return;
 
 		// Start with the first clause
-		result.insert(dnf_clauses[0].begin(), dnf_clauses[0].end());
+		result.clear();
+		for (auto& el: dnf_clauses.front())
+			result.insert(el);
 
 		// Iteratively expand the product
 		for (size_t i = 1; i < dnf_clauses.size(); ++i)
 		{
-			std::set<std::vector<monome>> temp_result;
+			btree::set<std::vector<monome>> temp_result;
 			for (const auto& existing_clause : result)
 			{
 				for (const auto& new_clause : dnf_clauses[i])
@@ -829,7 +833,7 @@ struct int_tracker
 		size_t max_width = 0;
 		for (auto& bit : bits)
 		{
-			max_width = std::max(max_depth, bit._conjunction.size());
+			max_width = std::max<size_t>(max_depth, bit._conjunction.size());
 			for (auto& disj: bit._conjunction)
 				max_depth = std::max(max_width, disj.size());
 		}
