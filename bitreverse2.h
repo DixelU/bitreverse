@@ -16,8 +16,6 @@
 
 #include "counted_ptr.h"
 
-#include "btree/set.h"
-
 namespace dixelu::bitreverse2
 {
 
@@ -100,7 +98,7 @@ struct bitstate
 
 	using disj = std::vector<monome>;
 
-	btree::set<disj> _conjunction;
+	std::set<disj> _conjunction;
 
 	bitstate(counted_ptr<bitsource> source) { init(std::move(source)); }
 	bitstate(bool value = false) { init(value ? one : zero); }
@@ -286,7 +284,7 @@ struct bitstate
 		bitstate result(true), temp;
 
 #ifdef DUMB_OPTIMZER_DELIGATION
-		btree::set<std::vector<monome>> proto_conjunction;
+		std::set<std::vector<monome>> proto_conjunction;
 		__internal_cartesian_product(dnf_clauses, proto_conjunction);
 
 		for (auto& disj: proto_conjunction)
@@ -455,7 +453,7 @@ private:
 	// Cartesian product function
 	static void __internal_cartesian_product(
 		const std::vector<std::vector<std::vector<monome>>>& dnf_clauses,
-		btree::set<std::vector<monome>>& result)
+		std::set<std::vector<monome>>& result)
 	{
 		if (dnf_clauses.empty())
 			return;
@@ -468,7 +466,7 @@ private:
 		// Iteratively expand the product
 		for (size_t i = 1; i < dnf_clauses.size(); ++i)
 		{
-			btree::set<std::vector<monome>> temp_result;
+			std::set<std::vector<monome>> temp_result;
 			for (const auto& existing_clause : result)
 			{
 				for (const auto& new_clause : dnf_clauses[i])
