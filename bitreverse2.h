@@ -4,12 +4,14 @@
 #include <set>
 #include <map>
 #include <deque>
+#include <string>
 #include <array>
 #include <memory>
 #include <vector>
 #include <utility>
 #include <stdexcept>
 #include <cinttypes>
+#include <algorithm>
 #include <functional>
 #include <type_traits>
 #include <list>
@@ -241,12 +243,12 @@ struct bitstate
 					set_constant(bitsource::state::FALSE);
 					return *this;
 				}
-				_conjunction.insert(std::move(el));
+				_conjunction.emplace(std::move(el));
 			}
 		}
 
 		for (auto& el: appendable)
-			_conjunction.insert(std::move(el));
+			_conjunction.emplace(std::move(el));
 
 		return *this;
 	}
@@ -290,7 +292,7 @@ struct bitstate
 		for (auto& disj: proto_conjunction)
 		{
 			temp._conjunction.clear();
-			temp._conjunction.insert(std::move(disj));
+			temp._conjunction.emplace(std::move(disj));
 			result &= temp;
 		}
 #else
@@ -434,7 +436,8 @@ private:
 					end = current + 1;
 
 				++current;
-				weak_equivalence_end = current + 1;
+				if (weak_equivalence_end != end)
+					weak_equivalence_end = current + 1;
 			}
 			else
 			{
@@ -461,7 +464,7 @@ private:
 		// Start with the first clause
 		result.clear();
 		for (auto& el: dnf_clauses.front())
-			result.insert(el);
+			result.emplace(el);
 
 		// Iteratively expand the product
 		for (size_t i = 1; i < dnf_clauses.size(); ++i)
@@ -472,7 +475,7 @@ private:
 				for (const auto& new_clause : dnf_clauses[i])
 				{
 					// Combine clauses
-					std::vector<monome> combined_clause = existing_clause;
+					/* std::vector<monome> combined_clause = existing_clause;
 					combined_clause.insert(
 						combined_clause.end(),
 						new_clause.begin(),
@@ -481,7 +484,20 @@ private:
 					// Sort and remove duplicates
 					std::sort(
 						combined_clause.begin(),
-						combined_clause.end());
+						combined_clause.end());*/
+
+					std::vector<monome> combined_clause;
+					combined_clause.reserve(existing_clause.size() + new_clause.size());
+
+					std::merge(
+						existing_clause.begin(),
+						existing_clause.end(),
+						new_clause.begin(),
+						new_clause.end(),
+						std::back_inserter(combined_clause));
+
+					if (!std::is_sorted(combined_clause.begin(), combined_clause.end()))
+						throw ";laskdfjlksdjflkjsdlk";
 
 					__remove_equal(combined_clause);
 
@@ -490,7 +506,7 @@ private:
 						combined_clause.erase(it, combined_clause.end());*/
 
 					if (!combined_clause.empty())
-						temp_result.insert(std::move(combined_clause));
+						temp_result.emplace(std::move(combined_clause));
 				}
 			}
 			result = std::move(temp_result);
