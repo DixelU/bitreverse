@@ -20,18 +20,12 @@ namespace dixelu
 {
 namespace bitreverse
 {
-
 namespace details
 {
-
 constexpr bool enable_optimisers = true;
-
-struct universe;
 
 struct bitstate
 {
-	std::set<counted_ptr<universe>> universes;
-
 	counted_ptr<bitstate> _1;
 	counted_ptr<bitstate> _2;
 
@@ -43,19 +37,11 @@ struct bitstate
 	std::uint8_t operation : 7 {'='};
 };
 
-struct universe:
-	enable_counted_from_this<universe>
-{
-	using universe_ptr = counted_ptr<universe>;
-	counted_ptr<universe> parent_universe;
-	std::map<counted_ptr<bitstate>, bool> linked_states;
-};
-
 constexpr std::pair<bool, char> extract_value_and_operation(std::uint8_t opcode)
 {
 	bool value = (opcode >> 7);
 	char operation = opcode & 0x7F;
-	return { value, operation };
+	return {value, operation};
 }
 
 constexpr std::array<std::uint8_t, 128> get_operation_args_count()
@@ -86,48 +72,50 @@ constexpr bool __call_optimisers(
 {
 	switch (current_operation)
 	{
-	case '|':
-	{
-		/* optimize constant expressions */
-		if (val1->operation == '=' && val1->state == true)
-			return new_state = val1, true;
-		if (val1->operation == '=' && val1->state == false)
-			return new_state = val2, true;
-		if (val2->operation == '=' && val2->state == true)
-			return new_state = val2, true;
-		if (val2->operation == '=' && val2->state == false)
-			return new_state = val1, true;
+		case '|':
+		{
+			/* optimize constant expressions */
+			if (val1->operation == '=' && val1->state == true)
+				return new_state = val1, true;
+			if (val1->operation == '=' && val1->state == false)
+				return new_state = val2, true;
+			if (val2->operation == '=' && val2->state == true)
+				return new_state = val2, true;
+			if (val2->operation == '=' && val2->state == false)
+				return new_state = val1, true;
 
-		break;
-	}
-	case '&':
-	{
-		/* optimize constant expressions */
-		if (val1->operation == '=' && val1->state == false)
-			return new_state = val1, true;
-		if (val1->operation == '=' && val1->state == true)
-			return new_state = val2, true;
-		if (val2->operation == '=' && val2->state == false)
-			return new_state = val2, true;
-		if (val2->operation == '=' && val2->state == true)
-			return new_state = val1, true;
+			break;
+		}
+		case '&':
+		{
+			/* optimize constant expressions */
+			if (val1->operation == '=' && val1->state == false)
+				return new_state = val1, true;
+			if (val1->operation == '=' && val1->state == true)
+				return new_state = val2, true;
+			if (val2->operation == '=' && val2->state == false)
+				return new_state = val2, true;
+			if (val2->operation == '=' && val2->state == true)
+				return new_state = val1, true;
 
-		break;
-	}
-	case '^':
-	{
-		/* optimize constant expressions */
-		if (val1->operation == '=' && val1->state == false)
-			return new_state = val2, true;
-		if (val1->operation == '=' && val1->state == true)
-			return new_state = details::make_bitstate_operation('!', val2), true;
-		if (val2->operation == '=' && val2->state == false)
-			return new_state = val1, true;
-		if (val2->operation == '=' && val2->state == true)
-			return new_state = details::make_bitstate_operation('!', val1), true;
+			break;
+		}
+		case '^':
+		{
+			/* optimize constant expressions */
+			if (val1->operation == '=' && val1->state == false)
+				return new_state = val2, true;
+			if (val1->operation == '=' && val1->state == true)
+				return new_state = details::make_bitstate_operation('!', val2),
+					true;
+			if (val2->operation == '=' && val2->state == false)
+				return new_state = val1, true;
+			if (val2->operation == '=' && val2->state == true)
+				return new_state = details::make_bitstate_operation('!', val1),
+					true;
 
-		break;
-	}
+			break;
+		}
 	}
 	return false; // optimisation unsuccessfull
 }
@@ -140,7 +128,7 @@ constexpr counted_ptr<bitstate> make_bitstate_operation(
 	counted_ptr<bitstate> new_state = make_counted<bitstate>();
 	auto [current_value, current_operation] = extract_value_and_operation(opcode);
 
-	const counted_ptr<bitstate>* vals[] = { &val1, &val2 };
+	const counted_ptr<bitstate>* vals[] = {&val1, &val2};
 	bool is_inplace_calculable = current_operation != '*';
 
 	for (size_t i = 0; i < operation_args_count[current_operation]; i++)
@@ -156,23 +144,33 @@ constexpr counted_ptr<bitstate> make_bitstate_operation(
 
 		switch (current_operation)
 		{
-		case '|': new_state->state = (val1->state | val2->state); break;
-		case '&': new_state->state = (val1->state & val2->state); break;
-		case '^': new_state->state = (val1->state ^ val2->state); break;
-		case '!':
-		case '~': new_state->state = ~val1->state; break;
-		case '=': new_state->state = current_value; break;
-		default:
-			throw std::logic_error("Unknown operand");
+			case '|':
+				new_state->state = (val1->state | val2->state);
+				break;
+			case '&':
+				new_state->state = (val1->state & val2->state);
+				break;
+			case '^':
+				new_state->state = (val1->state ^ val2->state);
+				break;
+			case '!':
+			case '~':
+				new_state->state = ~val1->state;
+				break;
+			case '=':
+				new_state->state = current_value;
+				break;
+			default:
+				throw std::logic_error("Unknown operand");
 		}
 	}
 	else
 	{
 		if constexpr (enable_optimisers)
 		{
-			auto optimisation_successfull =
+			auto successfull =
 				__call_optimisers(current_operation, val1, val2, new_state);
-			if (optimisation_successfull)
+			if (successfull)
 				return new_state;
 		}
 
@@ -192,10 +190,11 @@ constexpr counted_ptr<bitstate> make_bitstate_operation(
 
 	return new_state;
 }
-
 } // namespace details
 
-struct __UNKNOWN__ {};
+struct __UNKNOWN__
+{
+};
 
 constexpr __UNKNOWN__ unknown;
 
@@ -203,13 +202,22 @@ struct bit_tracker
 {
 	counted_ptr<details::bitstate> bit_state;
 
-	constexpr bit_tracker() : bit_state(details::make_bitstate_operation('=')) {};
+	constexpr bit_tracker() : bit_state(details::make_bitstate_operation('='))
+	{
+	};
 	constexpr bit_tracker(const bit_tracker&) = default;
 	constexpr bit_tracker(bit_tracker&&) = default;
 
-	explicit constexpr bit_tracker(counted_ptr<details::bitstate>&& state) : bit_state(std::move(state)) {}
+	explicit constexpr bit_tracker(counted_ptr<details::bitstate>&& state) : bit_state(
+		std::move(state))
+	{
+	}
 
-	constexpr bit_tracker(bool value) : bit_state(details::make_bitstate_operation('=' | (value << 7))) {}
+	constexpr bit_tracker(bool value) : bit_state(
+		details::make_bitstate_operation('=' | (value << 7)))
+	{
+	}
+
 	//constexpr bit_tracker(size_t value) : bit_state(details::make_bitstate_operation('=' | (bool(value) << 7))) {}
 
 	constexpr bit_tracker& operator=(const bit_tracker& rhs)
@@ -283,6 +291,7 @@ struct bit_tracker
 	{
 		if (bit_state->operation == '=')
 			return '0' + bit_state->state;
+
 		return bit_state->operation;
 	}
 };
@@ -295,7 +304,7 @@ constexpr bit_tracker execute_ternary_operation(
 	return ((!source) & val2) | (source & val1);
 }
 
-template<size_t N>
+template <size_t N>
 struct int_tracker
 {
 	using self_type = int_tracker<N>;
@@ -326,7 +335,7 @@ struct int_tracker
 		}
 	}
 
-	template<typename convertable_to_int>
+	template <typename convertable_to_int>
 	int_tracker(
 		typename std::enable_if<
 			std::is_convertible<convertable_to_int, std::uintmax_t>::value,
@@ -335,7 +344,7 @@ struct int_tracker
 	{
 	}
 
-	template<size_t Q>
+	template <size_t Q>
 	constexpr int_tracker(const int_tracker<Q>& rhs)
 	{
 		auto rhs_rit = rhs.bits.crbegin();
@@ -345,7 +354,7 @@ struct int_tracker
 			*this_rit = *rhs_rit;
 	}
 
-	constexpr int_tracker(bit_tracker bit):
+	constexpr int_tracker(bit_tracker bit) :
 		int_tracker()
 	{
 		bits.back() = std::move(bit);
@@ -353,6 +362,7 @@ struct int_tracker
 
 	constexpr int_tracker(self_type&&) = default;
 	constexpr int_tracker(const self_type&) = default;
+
 	constexpr int_tracker& operator=(const self_type& rhs)
 	{
 		for (size_t i = 0; i < N; ++i)
@@ -360,8 +370,10 @@ struct int_tracker
 		return *this;
 	}
 
-	explicit constexpr int_tracker(std::array<bit_tracker, N>&& bits):
-		bits(std::move(bits)) { }
+	explicit constexpr int_tracker(std::array<bit_tracker, N>&& bits) :
+		bits(std::move(bits))
+	{
+	}
 
 	constexpr self_type& operator=(self_type&& rhs)
 	{
@@ -441,11 +453,11 @@ struct int_tracker
 	}
 
 	constexpr self_type operator<<(size_t shift) const
-    {
+	{
 		self_type value = *this;
 		value <<= shift;
-        return value;
-    }
+		return value;
+	}
 
 	constexpr self_type& operator<<=(size_t shift)
 	{
@@ -524,19 +536,19 @@ struct int_tracker
 	}
 
 	constexpr self_type& operator+=(const self_type& rhs)
-    {
-        bit_tracker carry = false;
-        for (size_t i = 0; i < N; ++i)
-        {
-            auto& lhs_bit = bits[N - 1 - i];
-            auto& rhs_bit = rhs.bits[N - 1 - i];
+	{
+		bit_tracker carry = false;
+		for (size_t i = 0; i < N; ++i)
+		{
+			auto& lhs_bit = bits[N - 1 - i];
+			auto& rhs_bit = rhs.bits[N - 1 - i];
 
 			auto xor_bit = lhs_bit ^ rhs_bit ^ carry;
 			carry = (rhs_bit & carry & !lhs_bit) | (lhs_bit & (rhs_bit | carry));
 			lhs_bit = xor_bit;
-        }
+		}
 		return *this;
-    }
+	}
 
 	constexpr self_type& operator-=(const self_type& rhs)
 	{
@@ -544,25 +556,25 @@ struct int_tracker
 		return (*this += rhs_complement);
 	}
 
-    constexpr self_type operator+(const self_type& rhs) const
-    {
-        self_type lhs = *this;
-        lhs += rhs;
-        return lhs;
-    }
+	constexpr self_type operator+(const self_type& rhs) const
+	{
+		self_type lhs = *this;
+		lhs += rhs;
+		return lhs;
+	}
 
-    constexpr self_type operator-(const self_type& rhs) const
-    {
-        self_type lhs = *this;
-        lhs -= rhs;
-        return lhs;
-    }
+	constexpr self_type operator-(const self_type& rhs) const
+	{
+		self_type lhs = *this;
+		lhs -= rhs;
+		return lhs;
+	}
 
-    constexpr self_type operator-() const
-    {
+	constexpr self_type operator-() const
+	{
 		auto rhs_complement = this->operator~() + 1;
-        return rhs_complement;
-    }
+		return rhs_complement;
+	}
 
 	std::string __to_string() const
 	{
@@ -591,212 +603,26 @@ using itu64 = int_tracker<64>;
 
 namespace collision_resolution
 {
-	std::set<counted_ptr<details::universe>> __create_universes_on_current_operation(
-            const counted_ptr<details::bitstate>& bit_state,
-            bool probable_state)
-	{
-        std::set<counted_ptr<details::universe>> universes;
-
-        auto all_zeros_func = [&universes](
-                const counted_ptr<details::bitstate>& lhs,
-                const counted_ptr<details::bitstate>& rhs)
-        {
-            auto all_zeros = make_counted<details::universe>();
-
-            all_zeros->linked_states[lhs] = false;
-            if(rhs) // for single operand operators.
-                all_zeros->linked_states[rhs] = false;
-
-            universes.insert(std::move(all_zeros));
-        };
-
-        auto all_ones_func = [&universes](
-                const counted_ptr<details::bitstate>& lhs,
-                const counted_ptr<details::bitstate>& rhs)
-        {
-            auto all_zeros = make_counted<details::universe>();
-
-            all_zeros->linked_states[lhs] = true;
-            if(rhs) // for single operand operators.
-                all_zeros->linked_states[rhs] = true;
-
-            universes.insert(std::move(all_zeros));
-        };
-
-        auto lhs_is_greater_func = [&universes](
-                const counted_ptr<details::bitstate>& lhs,
-                const counted_ptr<details::bitstate>& rhs)
-        {
-            auto lhs_is_greater = make_counted<details::universe>();
-
-            lhs_is_greater->linked_states[lhs] = true;
-            lhs_is_greater->linked_states[rhs] = false;
-
-            universes.insert(std::move(lhs_is_greater));
-        };
-
-        auto rhs_is_greater_func = [&lhs_is_greater_func](
-                const counted_ptr<details::bitstate>& lhs,
-                const counted_ptr<details::bitstate>& rhs)
-        {
-            return lhs_is_greater_func(rhs, lhs);
-        };
-
-		switch (bit_state->operation)
-		{
-            case '^':
-            {
-                auto& lhs = bit_state->_1;
-                auto& rhs = bit_state->_2;
-
-                if(!probable_state)
-                {
-                    all_ones_func(lhs, rhs);
-                    all_zeros_func(lhs, rhs);
-                }
-                else
-                {
-                    lhs_is_greater_func(lhs, rhs);
-                    rhs_is_greater_func(lhs, rhs);
-                }
-
-                break;
-            }
-            case '|':
-            {
-                auto& lhs = bit_state->_1;
-                auto& rhs = bit_state->_2;
-
-                if(probable_state)
-                {
-                    all_ones_func(lhs, rhs);
-                    lhs_is_greater_func(lhs, rhs);
-                    rhs_is_greater_func(lhs, rhs);
-                }
-                else
-                    all_zeros_func(lhs, rhs);
-
-                break;
-            }
-            case '&':
-            {
-                auto& lhs = bit_state->_1;
-                auto& rhs = bit_state->_2;
-
-                if(!probable_state)
-                {
-                    all_zeros_func(lhs, rhs);
-                    lhs_is_greater_func(lhs, rhs);
-                    rhs_is_greater_func(lhs, rhs);
-                }
-                else
-                    all_ones_func(lhs, rhs);
-
-                break;
-            }
-            case '!':
-            {
-                auto& arg = bit_state->_1;
-
-                if(probable_state)
-                    all_zeros_func(arg, {});
-                else
-                    all_ones_func(arg, {});
-
-                break;
-            }
-            case '*':
-            {
-                all_zeros_func(bit_state, {});
-                all_ones_func(bit_state, {});
-
-                break;
-            }
-            case '=':
-            {
-                auto value = bit_state->state;
-
-                if(value == probable_state)
-                {
-                    auto all_zeros =
-                            make_counted<details::universe>();
-                    all_zeros->linked_states[bit_state] = value;
-                    universes.insert(std::move(all_zeros));
-                }
-            }
-		}
-
-        return universes;
-	}
-}
-
-void __build_universe_tree_deferred_recursion(
-	counted_ptr<details::bitstate> bit_state,
-	std::reference_wrapper<std::deque<std::function<void()>>> deferred_execution_array_ref)
-{
-	for (auto& current_universe : bit_state->universes)
-	{
-		for(auto& single_state: current_universe->linked_states)
-		{
-			auto new_universes =
-				collision_resolution::__create_universes_on_current_operation(
-					single_state.first,
-					single_state.second);
-
-			for(auto new_universe: new_universes)
-				new_universe->parent_universe = current_universe;
-
-			// todo: handle the lack of new universes (due to incorrect execution path)
-			// todo: save all endpoints (def. unknown/known values)
-
-			auto state_universe_ptr = single_state.first; // force copy
-			state_universe_ptr->universes.insert(new_universes.begin(), new_universes.end());
-
-			deferred_execution_array_ref.get().push_back(std::bind(
-				__build_universe_tree_deferred_recursion,
-				state_universe_ptr,
-				deferred_execution_array_ref));
-		}
-	}
-}
-
-void __build_universal_tree(bit_tracker& bit_tracker)
-{
-	std::deque<std::function<void()>> deferred_execution_array;
-	auto deferred_execution_array_ref = std::ref(deferred_execution_array);
-
-	deferred_execution_array_ref.get().push_back(std::bind(
-		__build_universe_tree_deferred_recursion,
-		bit_tracker.bit_state,
-		deferred_execution_array_ref));
-
-	while(deferred_execution_array.size())
-	{
-		std::cout << (std::to_string(deferred_execution_array.size()) + "\n") << std::flush;
-		deferred_execution_array.front()();
-		deferred_execution_array.pop_front();
-	}
 }
 
 void __resolve_bit_collisions(bit_tracker& bit_tracker)
 {
-	__build_universal_tree(bit_tracker);
-	// merge universes from the begining?
-
+	std::deque<std::pair<counted_ptr<details::bitstate>, bool>> worklist;
+	std::map<counted_ptr<details::bitstate>, bool> assignments;
 }
 
 void assert_equality(const bit_tracker& lhs, const bit_tracker& rhs)
 {
 	auto is_not_equal = (lhs ^ rhs);
 
-	auto equality_universe_zeros = make_counted<details::universe>();
+	//auto equality_universe_zeros = make_counted<details::universe>();
 
-	equality_universe_zeros->linked_states[is_not_equal.bit_state] = 0;
-	is_not_equal.bit_state->universes.insert(equality_universe_zeros);
+	//equality_universe_zeros->linked_states[is_not_equal.bit_state] = 0;
+	//is_not_equal.bit_state->universes.insert(equality_universe_zeros);
 	__resolve_bit_collisions(is_not_equal);
 }
 
-template<size_t N>
+template <size_t N>
 void assert_equality(const int_tracker<N>& lhs, const int_tracker<N>& rhs)
 {
 	bit_tracker result = 0;
