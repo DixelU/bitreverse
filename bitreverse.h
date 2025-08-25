@@ -603,12 +603,107 @@ using itu64 = int_tracker<64>;
 
 namespace collision_resolution
 {
+
+struct crs_state
+{
+	std::deque<std::pair<counted_ptr<details::bitstate>, bool>> worklist;
+	std::map<counted_ptr<details::bitstate>, bool> assignments;
+};
+
+void propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool value)
+{
+	auto& op = state->operation;
+	auto& v1 = state->_1;
+	auto& v2 = state->_2;
+
+	if (op == '^')
+	{
+		// If one input is known, the other is determined
+		auto v1_iter = crs.assignments.find(v1);
+		auto v2_iter = crs.assignments.find(v2);
+
+		if (v1_iter != crs.assignments.end())
+			crs.worklist.push_back({v2, v1_iter->second ^ value});
+		if (v2_iter != crs.assignments.end())
+			crs.worklist.push_back({v1, v2_iter->second ^ value});
+	}
+	else if (op == '&') {
+		if (value == true) { // If A&B=1, then A=1 and B=1
+			crs.worklist.push_back({v1, true});
+			crs.worklist.push_back({v2, true});
+		} else if (crs.assignments.count(v1) && crs.assignments[v1] == true) { // If A&B=0 and A=1, then B=0
+			crs.worklist.push_back({v2, false});
+		} else if (crs.assignments.count(v2) && crs.assignments[v2] == true) {
+			crs.worklist.push_back({v1, false});
+		}
+	}
+	else if (op == '|') {
+		if (value == false) { // If A|B=0, then A=0 and B=0
+			crs.worklist.push_back({v1, false});
+			crs.worklist.push_back({v2, false});
+		} else if (crs.assignments.count(v1) && crs.assignments[v1] == false) { // If A|B=1 and A=0, then B=1
+			crs.worklist.push_back({v2, true});
+		} else if (crs.assignments.count(v2) && crs.assignments[v2] == false) {
+			crs.worklist.push_back({v1, true});
+		}
+	}
+	else if (op == '!') { // NOT
+		crs.worklist.push_back({v1, !value});
+	}
+	// Base case: op is '*' (unknown) or '=' (constant). No further propagation.
+}
+
+bool solve(crs_state& state)
+{
+	while (!state.worklist.empty())
+	{
+		auto [current_state, required_value] =
+			state.worklist.front();
+
+		state.worklist.pop_front();
+
+		// 1. Check for contradictions
+		auto iter = state.assignments.find(current_state);
+		if (iter != state.assignments.end() && iter->second != required_value)
+			return false;
+
+		// 2. Assign the value and skip if already processed
+		if (iter != state.assignments.end())
+			continue;
+
+		state.assignments[current_state] = required_value;
+
+		// 3. Propagate the constraint to children
+		propagate(current_state, required_value);
+	}
+
+	return true;
+}
+
+/*
+ *
+* // In your assert_equality function
+void assert_equality(const bit_tracker& lhs, const bit_tracker& rhs)
+{
+    auto top_level_expr = (lhs ^ rhs);
+
+    // Clear previous results and start the process
+    worklist.clear();
+    assignments.clear();
+
+    // The initial constraint: the expression must be false.
+    worklist.push_back({top_level_expr.bit_state, false});
+
+    // Run the solver
+    solve();
+}
+ */
+
 }
 
 void __resolve_bit_collisions(bit_tracker& bit_tracker)
 {
-	std::deque<std::pair<counted_ptr<details::bitstate>, bool>> worklist;
-	std::map<counted_ptr<details::bitstate>, bool> assignments;
+
 }
 
 void assert_equality(const bit_tracker& lhs, const bit_tracker& rhs)
