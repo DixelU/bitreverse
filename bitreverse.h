@@ -681,37 +681,6 @@ bool solve(crs_state& crs)
 	return true;
 }
 
-
-
-bool resolve_bit_collisions(const bit_tracker& bit_tracker, bool equal)
-{
-	std::deque<crs_state> states;
-
-	states.emplace_back();
-	states.back().worklist.push_back({bit_tracker.bit_state, equal});
-
-
-}
-
-/*
- *
-* // In your assert_equality function
-void assert_equality(const bit_tracker& lhs, const bit_tracker& rhs)
-{
-    auto top_level_expr = (lhs ^ rhs);
-
-    // Clear previous results and start the process
-    worklist.clear();
-    assignments.clear();
-
-    // The initial constraint: the expression must be false.
-    worklist.push_back({top_level_expr.bit_state, false});
-
-    // Run the solver
-    solve();
-}
- */
-
 }
 
 void __resolve_bit_collisions(bit_tracker& bit_tracker)
