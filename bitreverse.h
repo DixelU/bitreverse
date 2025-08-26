@@ -9,6 +9,7 @@
 #include <utility>
 #include <stdexcept>
 #include <cinttypes>
+#include <set>
 #include <type_traits>
 
 #include "counted_ptr.h"
@@ -116,7 +117,7 @@ constexpr bool __call_optimisers(
 		default:
 			break;
 	}
-	return false; // optimisation unsuccessfull
+	return false; // optimisation unsuccessful
 }
 
 constexpr counted_ptr<bitstate> make_bitstate_operation(
@@ -167,9 +168,9 @@ constexpr counted_ptr<bitstate> make_bitstate_operation(
 	{
 		if constexpr (enable_optimisers)
 		{
-			auto successfull =
+			auto successful =
 				__call_optimisers(current_operation, val1, val2, new_state);
-			if (successfull)
+			if (successful)
 				return new_state;
 		}
 
@@ -594,6 +595,7 @@ struct crs_state
 {
 	std::deque<std::pair<counted_ptr<details::bitstate>, bool>> worklist;
 	std::map<counted_ptr<details::bitstate>, bool> assignments;
+	std::set<counted_ptr<details::bitstate>> undecided;
 };
 
 void propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool value)
@@ -681,22 +683,39 @@ bool solve(crs_state& crs)
 	return true;
 }
 
+void resolve_bit_collisions(bit_tracker& bit, bool state)
+{
+	std::deque<> states;
+
+	states.emplace_back();
+	states.back().worklist.emplace_back(bit.bit_state, state);
+
+	while (!states.empty())
+	{
+		auto& crs = states.back();
+
+		if (!solve(crs))
+		{
+			states.pop_back();
+			continue;
+		}
+
+		
+	}
+
+
 }
 
-void __resolve_bit_collisions(bit_tracker& bit_tracker)
-{
-
 }
 
-void assert_equality(const bit_tracker& lhs, const bit_tracker& rhs)
-{
+// Update the assert_equality functions to call the resolver
+void assert_equality(const bit_tracker& lhs, const bit_tracker& rhs) {
 	auto is_not_equal = (lhs ^ rhs);
-
-	//auto equality_universe_zeros = make_counted<details::universe>();
-
-	//equality_universe_zeros->linked_states[is_not_equal.bit_state] = 0;
-	//is_not_equal.bit_state->universes.insert(equality_universe_zeros);
-	__resolve_bit_collisions(is_not_equal);
+	auto assignments = __resolve_bit_collisions(is_not_equal);
+	if (assignments.empty())
+		throw std::runtime_error("Unsatisfiable constraints");
+	// You can use assignments here or store them globally if needed
+	// For now, it just solves; you can print or use in main.cpp
 }
 
 template <size_t N>
