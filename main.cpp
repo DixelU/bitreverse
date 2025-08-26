@@ -1,7 +1,7 @@
 ﻿#include <iostream>
 
 #include "bitreverse.h"
-#include "bitreverse2.h"
+#include "bitreverse2.h" // doesn't work, abandoned
 
 #include "counted_ptr.h"
 
@@ -376,13 +376,8 @@ int main()
 	std::string res_string = res.__to_string();
 	std::cout << res_string << std::endl;
 
-	/*auto res = crc32<dixelu::bitreverse2::int_tracker>({65, 88});
-	std::string res_string = res.__to_string();
-	std::cout << res_string << std::endl;
-	std::reverse(res_string.begin(), res_string.end());
-	std::cout << res_string << std::endl;*/
 	//hashing_test(32, md5);
-	//real_md5_reversal();
+	real_md5_reversal();
 
 	return 0;
 }

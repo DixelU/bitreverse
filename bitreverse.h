@@ -1,17 +1,14 @@
 #ifndef _DIXELU_BITREVERSE_H
 #define _DIXELU_BITREVERSE_H
 
-#include <set>
 #include <map>
 #include <deque>
 #include <array>
 #include <string>
 #include <memory>
-#include <vector>
 #include <utility>
 #include <stdexcept>
 #include <cinttypes>
-#include <functional>
 #include <type_traits>
 
 #include "counted_ptr.h"
@@ -106,16 +103,18 @@ constexpr bool __call_optimisers(
 			if (val1->operation == '=' && val1->state == false)
 				return new_state = val2, true;
 			if (val1->operation == '=' && val1->state == true)
-				return new_state = details::make_bitstate_operation('!', val2),
+				return new_state = make_bitstate_operation('!', val2),
 					true;
 			if (val2->operation == '=' && val2->state == false)
 				return new_state = val1, true;
 			if (val2->operation == '=' && val2->state == true)
-				return new_state = details::make_bitstate_operation('!', val1),
+				return new_state = make_bitstate_operation('!', val1),
 					true;
 
 			break;
 		}
+		default:
+			break;
 	}
 	return false; // optimisation unsuccessfull
 }
@@ -192,10 +191,7 @@ constexpr counted_ptr<bitstate> make_bitstate_operation(
 }
 } // namespace details
 
-struct __UNKNOWN__
-{
-};
-
+struct __UNKNOWN__ {};
 constexpr __UNKNOWN__ unknown;
 
 struct bit_tracker
@@ -218,15 +214,9 @@ struct bit_tracker
 	{
 	}
 
-	//constexpr bit_tracker(size_t value) : bit_state(details::make_bitstate_operation('=' | (bool(value) << 7))) {}
+	constexpr bit_tracker& operator=(const bit_tracker& rhs) = default;
 
-	constexpr bit_tracker& operator=(const bit_tracker& rhs)
-	{
-		bit_state = rhs.bit_state;
-		return *this;
-	}
-
-	constexpr bit_tracker& operator=(bit_tracker&& rhs)
+	constexpr bit_tracker& operator=(bit_tracker&& rhs) noexcept
 	{
 		bit_state = std::move(rhs.bit_state);
 		return *this;
@@ -287,12 +277,12 @@ struct bit_tracker
 		return bit_tracker(details::make_bitstate_operation('!', bit_state));
 	}
 
-	constexpr char __get_representative_char() const
+	[[nodiscard]] constexpr char __get_representative_char() const
 	{
 		if (bit_state->operation == '=')
-			return '0' + bit_state->state;
+			return static_cast<char>(bit_state->state + '0');
 
-		return bit_state->operation;
+		return static_cast<char>(bit_state->operation);
 	}
 };
 
@@ -375,7 +365,7 @@ struct int_tracker
 	{
 	}
 
-	constexpr self_type& operator=(self_type&& rhs)
+	constexpr self_type& operator=(self_type&& rhs) noexcept
 	{
 		for (size_t i = 0; i < N; ++i)
 			bits[i] = std::move(rhs.bits[i]);
@@ -449,7 +439,7 @@ struct int_tracker
 
 	constexpr bit_tracker operator!() const
 	{
-		return !(bit_tracker)*this;
+		return !static_cast<bit_tracker>(*this);
 	}
 
 	constexpr self_type operator<<(size_t shift) const
@@ -512,11 +502,9 @@ struct int_tracker
 	constexpr self_type& operator>>=(self_type& shift)
 	{
 		self_type copy = *this;
-		size_t shift_count = 0;
 		for (size_t i = 1; i < N; ++i)
 		{
 			size_t bit_index = N - i - 1;
-			shift_count << 1;
 			copy = __execute_ternary_assign(shift.bits[bit_index], copy, copy >> i);
 		}
 		return (*this = std::move(copy));
@@ -525,11 +513,9 @@ struct int_tracker
 	constexpr self_type& operator<<=(self_type& shift)
 	{
 		self_type copy = *this;
-		size_t shift_count = 0;
 		for (size_t i = 1; i < N; ++i)
 		{
 			size_t bit_index = N - i - 1;
-			shift_count << 1;
 			copy = __execute_ternary_assign(shift.bits[bit_index], copy, copy << i);
 		}
 		return (*this = std::move(copy));
@@ -616,68 +602,95 @@ void propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool
 	auto& v1 = state->_1;
 	auto& v2 = state->_2;
 
+	const auto v1_iter = crs.assignments.find(v1);
+	const auto v2_iter = crs.assignments.find(v2);
+
 	if (op == '^')
 	{
 		// If one input is known, the other is determined
-		auto v1_iter = crs.assignments.find(v1);
-		auto v2_iter = crs.assignments.find(v2);
-
 		if (v1_iter != crs.assignments.end())
 			crs.worklist.push_back({v2, v1_iter->second ^ value});
+
 		if (v2_iter != crs.assignments.end())
 			crs.worklist.push_back({v1, v2_iter->second ^ value});
 	}
-	else if (op == '&') {
-		if (value == true) { // If A&B=1, then A=1 and B=1
+	else if (op == '&')
+	{
+		// If A&B=1, then A=1 and B=1
+		if (value == true)
+		{
 			crs.worklist.push_back({v1, true});
 			crs.worklist.push_back({v2, true});
-		} else if (crs.assignments.count(v1) && crs.assignments[v1] == true) { // If A&B=0 and A=1, then B=0
-			crs.worklist.push_back({v2, false});
-		} else if (crs.assignments.count(v2) && crs.assignments[v2] == true) {
-			crs.worklist.push_back({v1, false});
+			return;
 		}
+
+		// If A&B=0 and A=1, then B=0
+		if (v1_iter != crs.assignments.end() && v1_iter->second == true)
+			crs.worklist.push_back({v2, false});
+
+		if (v2_iter != crs.assignments.end() && v2_iter->second == true)
+			crs.worklist.push_back({v1, false});
 	}
-	else if (op == '|') {
-		if (value == false) { // If A|B=0, then A=0 and B=0
+	else if (op == '|')
+	{
+		// If A|B=0, then A=0 and B=0
+		if (value == false)
+		{
 			crs.worklist.push_back({v1, false});
 			crs.worklist.push_back({v2, false});
-		} else if (crs.assignments.count(v1) && crs.assignments[v1] == false) { // If A|B=1 and A=0, then B=1
+			return;
+		}
+
+		// If A|B=1 and A=0, then B=1
+		if (v1_iter != crs.assignments.end() && v1_iter->second == false)
 			crs.worklist.push_back({v2, true});
-		} else if (crs.assignments.count(v2) && crs.assignments[v2] == false) {
+
+		if (v2_iter != crs.assignments.end() && v2_iter->second == false)
 			crs.worklist.push_back({v1, true});
-		}
 	}
-	else if (op == '!') { // NOT
+	else if (op == '!')
 		crs.worklist.push_back({v1, !value});
-	}
+
 	// Base case: op is '*' (unknown) or '=' (constant). No further propagation.
 }
 
-bool solve(crs_state& state)
+bool solve(crs_state& crs)
 {
-	while (!state.worklist.empty())
+	while (!crs.worklist.empty())
 	{
 		auto [current_state, required_value] =
-			state.worklist.front();
+			crs.worklist.front();
 
-		state.worklist.pop_front();
+		crs.worklist.pop_front();
 
 		// 1. Check for contradictions
-		auto iter = state.assignments.find(current_state);
-		if (iter != state.assignments.end() && iter->second != required_value)
+		auto iter = crs.assignments.find(current_state);
+		if (iter != crs.assignments.end() && iter->second != required_value)
 			return false;
 
 		// 2. Assign the value and skip if already processed
-		if (iter != state.assignments.end())
+		if (iter != crs.assignments.end())
 			continue;
 
-		state.assignments[current_state] = required_value;
+		crs.assignments[current_state] = required_value;
 
 		// 3. Propagate the constraint to children
-		propagate(current_state, required_value);
+		propagate(crs, current_state, required_value);
 	}
 
 	return true;
+}
+
+
+
+bool resolve_bit_collisions(const bit_tracker& bit_tracker, bool equal)
+{
+	std::deque<crs_state> states;
+
+	states.emplace_back();
+	states.back().worklist.push_back({bit_tracker.bit_state, equal});
+
+
 }
 
 /*
