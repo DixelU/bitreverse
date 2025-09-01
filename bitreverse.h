@@ -604,8 +604,15 @@ void propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool
 	auto& v1 = state->_1;
 	auto& v2 = state->_2;
 
+	crs.undecided.erase(state);
+
 	const auto v1_iter = crs.assignments.find(v1);
 	const auto v2_iter = crs.assignments.find(v2);
+
+	if (v1_iter == crs.assignments.end())
+		crs.undecided.insert(v1);
+	if (v2_iter == crs.assignments.end())
+		crs.undecided.insert(v2);
 
 	if (op == '^')
 	{
@@ -683,9 +690,9 @@ bool solve(crs_state& crs)
 	return true;
 }
 
-void resolve_bit_collisions(bit_tracker& bit, bool state)
+crs_state resolve_bit_collisions(bit_tracker& bit, bool state)
 {
-	std::deque<> states;
+	std::deque<crs_state> states;
 
 	states.emplace_back();
 	states.back().worklist.emplace_back(bit.bit_state, state);
@@ -700,32 +707,43 @@ void resolve_bit_collisions(bit_tracker& bit, bool state)
 			continue;
 		}
 
-		
+		if (crs.undecided.empty())
+			return crs;
+
+		auto iter = crs.undecided.begin();
+		auto bit_ptr = *iter;
+
+		crs_state next_state = crs;
+		crs.worklist.emplace_back(bit_ptr, true);
+		states.emplace_back(std::move(crs));
+		states.back().worklist.emplace_back(std::move(bit_ptr), false);
 	}
 
-
+	return {};
 }
 
 }
 
 // Update the assert_equality functions to call the resolver
-void assert_equality(const bit_tracker& lhs, const bit_tracker& rhs) {
+std::map<counted_ptr<details::bitstate>, bool>
+	assert_equality(const bit_tracker& lhs, const bit_tracker& rhs)
+{
 	auto is_not_equal = (lhs ^ rhs);
-	auto assignments = __resolve_bit_collisions(is_not_equal);
-	if (assignments.empty())
+	auto assignments = collision_resolution::resolve_bit_collisions(is_not_equal, false);
+	if (!assignments.undecided.empty())
 		throw std::runtime_error("Unsatisfiable constraints");
-	// You can use assignments here or store them globally if needed
-	// For now, it just solves; you can print or use in main.cpp
+
+	return assignments.assignments;
 }
 
 template <size_t N>
-void assert_equality(const int_tracker<N>& lhs, const int_tracker<N>& rhs)
+std::map<counted_ptr<details::bitstate>, bool>
+	assert_equality(const int_tracker<N>& lhs, const int_tracker<N>& rhs)
 {
 	bit_tracker result = 0;
 	for (size_t index = 0; index < N; ++index)
 		result |= (lhs.bits[index] ^ rhs.bits[index]);
-	assert_equality(result, 0);
-	__resolve_bit_collisions(result);
+	return assert_equality(result, 0);
 }
 
 } // namespace bitreverse
