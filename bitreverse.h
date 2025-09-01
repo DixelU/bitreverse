@@ -609,9 +609,9 @@ void propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool
 	const auto v1_iter = crs.assignments.find(v1);
 	const auto v2_iter = crs.assignments.find(v2);
 
-	if (v1_iter == crs.assignments.end())
+	if (v1 && v1_iter == crs.assignments.end())
 		crs.undecided.insert(v1);
-	if (v2_iter == crs.assignments.end())
+	if (v2 && v2_iter == crs.assignments.end())
 		crs.undecided.insert(v2);
 
 	if (op == '^')
@@ -670,6 +670,9 @@ bool solve(crs_state& crs)
 		auto [current_state, required_value] =
 			crs.worklist.front();
 
+		if (!current_state)
+			__debugbreak();
+
 		crs.worklist.pop_front();
 
 		// 1. Check for contradictions
@@ -704,19 +707,37 @@ crs_state resolve_bit_collisions(bit_tracker& bit, bool state)
 		if (!solve(crs))
 		{
 			states.pop_back();
+			std::cout << "Branching failed\n";
 			continue;
 		}
 
 		if (crs.undecided.empty())
+		{
 			return crs;
+		}
 
+		// Incomplete, need to branch.
 		auto iter = crs.undecided.begin();
-		auto bit_ptr = *iter;
+		auto bit_ptr = *iter; // E. Pick a variable to branch on.
 
-		crs_state next_state = crs;
-		crs.worklist.emplace_back(bit_ptr, true);
-		states.emplace_back(std::move(crs));
-		states.back().worklist.emplace_back(std::move(bit_ptr), false);
+		// Pop the current ambiguous state from the stack.
+		crs_state original_state = std::move(states.back());
+		states.pop_back();
+
+		// Create two new, clean states for each branch.
+		crs_state false_branch_state = original_state;
+		crs_state true_branch_state = std::move(original_state); // Efficiently move from the temp
+
+		// Add the respective guess to the worklist of each new state.
+		false_branch_state.worklist.push_back({bit_ptr, false});
+		true_branch_state.worklist.push_back({bit_ptr, true});
+
+		// Push the new branches onto the stack. The one pushed last will be processed first.
+		// We push the "true" branch first, so the "false" branch is on top and gets priority.
+		states.push_back(std::move(true_branch_state));
+		states.push_back(std::move(false_branch_state));
+
+		std::cout << "Branched @ " << bit_ptr->max_depth << " depth\n";
 	}
 
 	return {};
@@ -744,6 +765,22 @@ std::map<counted_ptr<details::bitstate>, bool>
 	for (size_t index = 0; index < N; ++index)
 		result |= (lhs.bits[index] ^ rhs.bits[index]);
 	return assert_equality(result, 0);
+}
+
+void assign_assert_result(bit_tracker& value, const std::map<counted_ptr<details::bitstate>, bool>& assignments)
+{
+	const auto iter = assignments.find(value.bit_state);
+	if (iter == assignments.end())
+		return;
+
+	value = iter->second;
+}
+
+template <size_t N>
+void assign_assert_result(int_tracker<N>& value, const std::map<counted_ptr<details::bitstate>, bool>& assignments)
+{
+	for (auto& bit_tracker : value.bits)
+		assign_assert_result(bit_tracker, assignments);
 }
 
 } // namespace bitreverse

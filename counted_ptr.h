@@ -34,21 +34,22 @@ struct counted_ptr
 	using self_type = counted_ptr<t_type>;
 
 	constexpr counted_ptr() : _base(nullptr) {};
-	constexpr counted_ptr(self_type&& p) noexcept :
+	constexpr counted_ptr(counted_ptr&& p) noexcept :
 		_base(p._base)
 	{
 		p._base = nullptr;
 	}
-	constexpr counted_ptr(const self_type& p) :
+
+	constexpr counted_ptr(const counted_ptr& p):
 		_base(p._base)
 	{
 		if (_base)
-			_base->_c++;
+			++_base->_c;
 	}
 
 	constexpr ~counted_ptr() { __destroy(); }
 
-	constexpr self_type& operator=(self_type&& p)
+	constexpr counted_ptr& operator=(counted_ptr&& p)
 	{
 		if (p._base == _base)
 			return *this;
@@ -59,14 +60,14 @@ struct counted_ptr
 		return *this;
 	}
 
-	constexpr self_type& operator=(const self_type& p)
+	constexpr counted_ptr& operator=(const counted_ptr& p)
 	{
 		if (p._base == _base)
 			return *this;
 
 		__destroy();
 		_base = p._base;
-		_base->_c++;
+		++_base->_c;
 		return *this;
 	}
 
@@ -85,12 +86,12 @@ struct counted_ptr
 		return _base->_p;
 	}
 
-	constexpr bool operator<(const self_type& rhs) const
+	constexpr bool operator<(const counted_ptr& rhs) const
 	{
 		return _base < rhs._base;
 	}
 
-	constexpr bool operator==(const self_type& rhs) const
+	constexpr bool operator==(const counted_ptr& rhs) const
 	{
 		return _base == rhs._base;
 	}
@@ -110,7 +111,7 @@ struct counted_ptr
 		__destroy();
 	}
 
-	constexpr std::size_t count() const
+	[[nodiscard]] constexpr std::size_t count() const
 	{
 		if (_base)
 			return _base->_c;

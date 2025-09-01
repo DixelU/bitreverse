@@ -1,7 +1,7 @@
 ﻿#include <iostream>
+#include <vector>
 
 #include "bitreverse.h"
-#include "bitreverse2.h" // doesn't work, abandoned
 
 #include "counted_ptr.h"
 
@@ -17,6 +17,8 @@ void counted_simple_test()
 	q = v;
 	v = t;
 	v = v;
+
+	t = std::move(t);
 
 	std::cout << *v << ":" << v.count() << std::endl;
 	std::cout << *t << ":" << t.count() << std::endl;
@@ -71,19 +73,6 @@ void inplace_calculation_test_1()
 	std::cout << "Bit depth: " << c.__max_depth() << std::endl;
 }
 
-void inplace_calculation_test_2()
-{
-	std::cout << std::endl << "inplace_calculation_test 2" << std::endl;
-	dixelu::bitreverse2::int_tracker<32> a = 2173, b = 234789, c = 1, u = dixelu::bitreverse2::unknown;
-	b = a ^ u;
-	std::cout << b.__to_string() << std::endl;
-	a |= b;
-	b ^= c;
-	c = a | b & c;
-	std::cout << c.__to_string() << std::endl;
-	std::cout << "Bit depth: " << c.__max_depth().second << std::endl;
-}
-
 
 template<typename F>
 void hashing_test_1(size_t string_size, F f)
@@ -102,27 +91,6 @@ void hashing_test_1(size_t string_size, F f)
 	std::cout << "Result history depths: " << std::endl;
 	for (auto& el : result.bits)
 		std::cout << el.bit_state->max_depth << " ";
-	std::cout << std::endl;
-}
-
-
-template<typename F>
-void hashing_test_2(size_t string_size, F f)
-{
-	std::cout << std::endl << "Hashing test 2. Checking the history depths on string size: " << string_size << std::endl;
-
-	std::vector<dixelu::bitreverse2::itu8> unknown_string(string_size, dixelu::bitreverse2::unknown);
-
-	for (auto& ch : unknown_string)
-		ch &= 0x7F;//ascii symbols
-
-	auto result = f(unknown_string);
-
-	std::cout << result.__to_string() << " " << result.__max_depth_str() << std::endl;
-
-	std::cout << "Result history depths: " << std::endl;
-	for (auto& el : result.bits)
-		std::cout << el._conjunction.size() << " ";
 	std::cout << std::endl;
 }
 
@@ -165,25 +133,6 @@ void add_substract_test_1()
 	std::cout << "a - b " << amb.__to_string() << " depth: " << amb.__max_depth() << std::endl;
 	std::cout << "-a " << ma.__to_string() << " depth: " << ma.__max_depth() << std::endl;
 	std::cout << "~a " << nota.__to_string() << " depth: " << nota.__max_depth() << std::endl;
-}
-
-
-void add_substract_test_2()
-{
-	std::cout << std::endl << "add_substract_test 2" << std::endl;
-	dixelu::bitreverse2::itu16 a, b;
-	a = dixelu::bitreverse2::unknown;
-	b = 16;
-
-	auto apb = a + b;
-	auto amb = a - b;
-	auto ma = -a;
-	auto nota = ~a;
-
-	std::cout << "a + b " << apb.__to_string() << " depth: " << apb.__max_depth_str() << std::endl;
-	std::cout << "a - b " << amb.__to_string() << " depth: " << amb.__max_depth_str() << std::endl;
-	std::cout << "-a " << ma.__to_string() << " depth: " << ma.__max_depth_str() << std::endl;
-	std::cout << "~a " << nota.__to_string() << " depth: " << nota.__max_depth_str() << std::endl;
 }
 
 template<template<size_t> typename int_tracker>
@@ -339,23 +288,54 @@ void real_md5_reversal()
 
 	auto is_false = md5_result_differs & hashed_string_is_not_ascii;
 	
-	dixelu::bitreverse::assert_equality(is_false, 0);
+	auto reversal_result = dixelu::bitreverse::assert_equality(is_false, 0);
 
 	std::cout << "Real MD5 reversal test" << std::endl;
 	std::cout << md5_result.__to_string() << std::endl;
 	std::cout << is_false.bit_state->max_depth << std::endl;
+
+	for (auto& single_char : hashed_string)
+		dixelu::bitreverse::assign_assert_result(single_char, reversal_result);
+
+	std::cout << md5_result.__to_string() << std::endl;
 }
 
-template<size_t N>
-void print_depth(dixelu::bitreverse2::int_tracker<N>& value, std::string str = "")
+void real_crc32_reversal()
 {
-	auto [depth, width] = value.__max_depth();
-	std::cout << str << ": [" << depth << ", " << width << "]" << std::endl;
-}
+	using dixelu::bitreverse::unknown;
 
-//  u  u  u  u
-// ~u ~u ~u ~u <- ~
-//
+	std::vector<dixelu::bitreverse::itu8> hashed_string = { unknown, unknown, unknown, unknown, unknown, unknown, unknown };
+	std::array<dixelu::bitreverse::bit_tracker, 32> target_hash
+	{0,0,0,0,0,1,0,0,1,1,0,0,1,1,1,1,1,1,1,0,1,1,0,1,0,0,0,0,0,0,0,1};
+	dixelu::bitreverse::int_tracker<32> result(std::move(target_hash));
+
+	dixelu::bitreverse::bit_tracker hashed_string_is_not_ascii;
+	for (auto& itu8 : hashed_string)
+	{
+		hashed_string_is_not_ascii |= dixelu::bitreverse::bit_tracker(itu8 & 0x80); // is beyond ascii
+		hashed_string_is_not_ascii |=
+			dixelu::bitreverse::bit_tracker((itu8 - 31) & 0x80) &  // is control symbol
+			dixelu::bitreverse::bit_tracker(itu8); // and not zero
+	}
+
+	auto crc32_result = crc32(hashed_string);
+	auto crc32_result_differs = dixelu::bitreverse::bit_tracker(crc32_result ^ result);
+	auto is_false = crc32_result_differs | hashed_string_is_not_ascii;
+
+	auto reversal_result = dixelu::bitreverse::assert_equality(is_false, 1);
+
+	std::cout << "Real CRC32 reversal test" << std::endl;
+	std::cout << crc32_result.__to_string() << std::endl;
+	std::cout << is_false.bit_state->max_depth << std::endl;
+
+	for (auto& single_char : hashed_string)
+	{
+		dixelu::bitreverse::assign_assert_result(single_char, reversal_result);
+		std::cout << single_char.__to_string();
+	}
+
+	std::cout << std::endl;
+}
 
 int main()
 {
@@ -365,19 +345,20 @@ int main()
 
 	//counted_simple_test();
 	//counted_test_with_enable_counted_from_this();
-	inplace_calculation_test_1();
-	inplace_calculation_test_2();
-	add_substract_test_1();
-	add_substract_test_2();
-	hashing_test_1(3, crc32<dixelu::bitreverse::int_tracker>);
-	hashing_test_2(3, crc32<dixelu::bitreverse2::int_tracker>);
+	//inplace_calculation_test_1();
+	//inplace_calculation_test_2();
+	//add_substract_test_1();
+	//add_substract_test_2();
+	//hashing_test_1(3, crc32<dixelu::bitreverse::int_tracker>);
+	//hashing_test_2(3, crc32<dixelu::bitreverse2::int_tracker>);
 
-	auto res = crc32<dixelu::bitreverse::int_tracker>({25});
+	auto res = crc32<dixelu::bitreverse::int_tracker>({'c','r','c','3','2','-','x'});
 	std::string res_string = res.__to_string();
 	std::cout << res_string << std::endl;
 
+	real_crc32_reversal();
 	//hashing_test(32, md5);
-	real_md5_reversal();
+	//real_md5_reversal();
 
 	return 0;
 }
