@@ -286,7 +286,7 @@ void real_md5_reversal()
 	auto md5_result = md5(hashed_string);
 	auto md5_result_differs = dixelu::bitreverse::bit_tracker(md5_result ^ result);
 
-	auto is_false = md5_result_differs & hashed_string_is_not_ascii;
+	auto is_false = md5_result_differs | hashed_string_is_not_ascii;
 	
 	auto reversal_result = dixelu::bitreverse::assert_equality(is_false, 0);
 
@@ -352,11 +352,25 @@ int main()
 	//hashing_test_1(3, crc32<dixelu::bitreverse::int_tracker>);
 	//hashing_test_2(3, crc32<dixelu::bitreverse2::int_tracker>);
 
-	auto res = crc32<dixelu::bitreverse::int_tracker>({'c','r','c','3','2','-','x'});
-	std::string res_string = res.__to_string();
-	std::cout << res_string << std::endl;
+	//auto res = crc32<dixelu::bitreverse::int_tracker>({'c','r','c','3','2','-','x'});
+	//std::string res_string = res.__to_string();
+	//std::cout << res_string << std::endl;
 
-	real_crc32_reversal();
+	const int source = 21035;
+	const int increment = 0x10;
+
+	dixelu::bitreverse::itu32 value = source;
+	dixelu::bitreverse::itu32 unk = dixelu::bitreverse::unknown;
+	dixelu::bitreverse::itu32 result = value + unk;
+
+	dixelu::bitreverse::itu32 result_expected = (source + increment);
+
+	auto assertion_result = dixelu::bitreverse::assert_equality(result, result_expected);
+	dixelu::bitreverse::assign_assert_result(unk, assertion_result);
+
+	std::cout << unk.__to_string() << std::endl;
+
+	//real_crc32_reversal();
 	//hashing_test(32, md5);
 	//real_md5_reversal();
 

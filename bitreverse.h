@@ -9,6 +9,7 @@
 #include <utility>
 #include <stdexcept>
 #include <cinttypes>
+#include <optional>
 #include <set>
 #include <type_traits>
 
@@ -609,19 +610,27 @@ void propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool
 	const auto v1_iter = crs.assignments.find(v1);
 	const auto v2_iter = crs.assignments.find(v2);
 
-	if (v1 && v1_iter == crs.assignments.end())
-		crs.undecided.insert(v1);
-	if (v2 && v2_iter == crs.assignments.end())
-		crs.undecided.insert(v2);
+	auto get_value = [&](const counted_ptr<details::bitstate>& s) -> std::optional<bool>
+	{
+		if (!s)
+			return std::nullopt;
+		if (s->operation == '=')
+			return s->state != 0;
+
+		auto it = crs.assignments.find(s);
+		if (it != crs.assignments.end())
+			return it->second;
+		return std::nullopt;
+	};
 
 	if (op == '^')
 	{
 		// If one input is known, the other is determined
-		if (v1_iter != crs.assignments.end())
-			crs.worklist.push_back({v2, v1_iter->second ^ value});
+		if (auto v1_val = get_value(v1))
+			crs.worklist.push_back({v2, *v1_val ^ value});
 
-		if (v2_iter != crs.assignments.end())
-			crs.worklist.push_back({v1, v2_iter->second ^ value});
+		if (auto v2_val = get_value(v2))
+			crs.worklist.push_back({v1, *v2_val ^ value});
 	}
 	else if (op == '&')
 	{
@@ -633,11 +642,10 @@ void propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool
 			return;
 		}
 
-		// If A&B=0 and A=1, then B=0
-		if (v1_iter != crs.assignments.end() && v1_iter->second == true)
+		if (auto v1_val = get_value(v1); v1_val && *v1_val == true)
 			crs.worklist.push_back({v2, false});
 
-		if (v2_iter != crs.assignments.end() && v2_iter->second == true)
+		if (auto v2_val = get_value(v2); v2_val && *v2_val == true)
 			crs.worklist.push_back({v1, false});
 	}
 	else if (op == '|')
@@ -650,11 +658,10 @@ void propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool
 			return;
 		}
 
-		// If A|B=1 and A=0, then B=1
-		if (v1_iter != crs.assignments.end() && v1_iter->second == false)
+		if (auto v1_val = get_value(v1); v1_val && *v1_val == false)
 			crs.worklist.push_back({v2, true});
 
-		if (v2_iter != crs.assignments.end() && v2_iter->second == false)
+		if (auto v2_val = get_value(v2); v2_val && *v2_val == false)
 			crs.worklist.push_back({v1, true});
 	}
 	else if (op == '!')
@@ -667,30 +674,58 @@ bool solve(crs_state& crs)
 {
 	while (!crs.worklist.empty())
 	{
-		auto [current_state, required_value] =
-			crs.worklist.front();
-
-		if (!current_state)
-			__debugbreak();
-
+		auto [current_state, required_value] = crs.worklist.front();
 		crs.worklist.pop_front();
 
-		// 1. Check for contradictions
-		auto iter = crs.assignments.find(current_state);
-		if (iter != crs.assignments.end() && iter->second != required_value)
-			return false;
+		std::optional<bool> curr_val = std::nullopt;
+		if (current_state->operation == '=')
+			curr_val = current_state->state != 0;
+		else
+		{
+			auto iter = crs.assignments.find(current_state);
+			if (iter != crs.assignments.end())
+				curr_val = iter->second;
+		}
 
-		// 2. Assign the value and skip if already processed
-		if (iter != crs.assignments.end())
+		if (curr_val.has_value())
+		{
+			if (*curr_val != required_value)
+				return false;
+
 			continue;
+		}
 
-		crs.assignments[current_state] = required_value;
+		// Assign (skip constants, as they're fixed)
+		if (current_state->operation != '=')
+			crs.assignments[current_state] = required_value;
 
-		// 3. Propagate the constraint to children
 		propagate(crs, current_state, required_value);
 	}
 
 	return true;
+}
+
+std::set<counted_ptr<details::bitstate>> get_all_variables(const counted_ptr<details::bitstate>& state)
+{
+	std::set<counted_ptr<details::bitstate>> vars;
+
+	std::deque<counted_ptr<details::bitstate>> worklist{state};
+
+	while (!worklist.empty())
+	{
+		counted_ptr<details::bitstate> current_state{std::move(worklist.front())};
+		worklist.pop_front();
+
+		if (!state || state->operation == '=')
+			continue;
+
+		if (state->_1)
+			vars.insert(state->_1);
+		if (state->_2)
+			vars.insert(state->_2);
+	}
+
+	return vars;
 }
 
 crs_state resolve_bit_collisions(bit_tracker& bit, bool state)
@@ -699,6 +734,7 @@ crs_state resolve_bit_collisions(bit_tracker& bit, bool state)
 
 	states.emplace_back();
 	states.back().worklist.emplace_back(bit.bit_state, state);
+	states.back().undecided = get_all_variables(bit.bit_state);
 
 	while (!states.empty())
 	{
