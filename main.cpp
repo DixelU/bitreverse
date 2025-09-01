@@ -356,8 +356,8 @@ int main()
 	//std::string res_string = res.__to_string();
 	//std::cout << res_string << std::endl;
 
-	const int source = 21035;
-	const int increment = 0x10;
+	const int source = 0b11111110111110010100;
+	const int increment = 0b1000011100;
 
 	dixelu::bitreverse::itu32 value = source;
 	dixelu::bitreverse::itu32 unk = dixelu::bitreverse::unknown;
@@ -368,10 +368,11 @@ int main()
 	auto assertion_result = dixelu::bitreverse::assert_equality(result, result_expected);
 	dixelu::bitreverse::assign_assert_result(unk, assertion_result);
 
-	std::cout << unk.__to_string() << std::endl;
+	std::cout << "Got:\t\t " << unk.__to_string() << std::endl;
+	std::cout << "Expected:\t " << (result_expected - source).__to_string() << std::endl;
 
-	//real_crc32_reversal();
 	//hashing_test(32, md5);
+	//real_crc32_reversal();
 	//real_md5_reversal();
 
 	return 0;

@@ -607,8 +607,13 @@ void propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool
 
 	crs.undecided.erase(state);
 
-	const auto v1_iter = crs.assignments.find(v1);
-	const auto v2_iter = crs.assignments.find(v2);
+	if (op == '=')
+	{
+		if (value != state->state)
+			__debugbreak();
+
+		return;
+	}
 
 	auto get_value = [&](const counted_ptr<details::bitstate>& s) -> std::optional<bool>
 	{
@@ -622,6 +627,8 @@ void propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool
 			return it->second;
 		return std::nullopt;
 	};
+
+	// if value is not yet known -> put it into undecided.
 
 	if (op == '^')
 	{
@@ -705,36 +712,13 @@ bool solve(crs_state& crs)
 	return true;
 }
 
-std::set<counted_ptr<details::bitstate>> get_all_variables(const counted_ptr<details::bitstate>& state)
-{
-	std::set<counted_ptr<details::bitstate>> vars;
-
-	std::deque<counted_ptr<details::bitstate>> worklist{state};
-
-	while (!worklist.empty())
-	{
-		counted_ptr<details::bitstate> current_state{std::move(worklist.front())};
-		worklist.pop_front();
-
-		if (!state || state->operation == '=')
-			continue;
-
-		if (state->_1)
-			vars.insert(state->_1);
-		if (state->_2)
-			vars.insert(state->_2);
-	}
-
-	return vars;
-}
-
 crs_state resolve_bit_collisions(bit_tracker& bit, bool state)
 {
 	std::deque<crs_state> states;
 
 	states.emplace_back();
 	states.back().worklist.emplace_back(bit.bit_state, state);
-	states.back().undecided = get_all_variables(bit.bit_state);
+	states.back().undecided; // this is not the correct approach get_all_variables(bit.bit_state);
 
 	while (!states.empty())
 	{
@@ -754,7 +738,7 @@ crs_state resolve_bit_collisions(bit_tracker& bit, bool state)
 
 		// Incomplete, need to branch.
 		auto iter = crs.undecided.begin();
-		auto bit_ptr = *iter; // E. Pick a variable to branch on.
+		auto bit_ptr = *iter; // Pick a variable to branch on.
 
 		// Pop the current ambiguous state from the stack.
 		crs_state original_state = std::move(states.back());
