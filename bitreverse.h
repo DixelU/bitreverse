@@ -332,15 +332,6 @@ struct int_tracker
 		}
 	}
 
-	template <typename convertable_to_int>
-	int_tracker(
-		typename std::enable_if<
-			std::is_convertible<convertable_to_int, std::uintmax_t>::value,
-			convertable_to_int>::type maxint_value) :
-		int_tracker(static_cast<std::uintmax_t>(maxint_value))
-	{
-	}
-
 	template <size_t Q>
 	constexpr int_tracker(const int_tracker<Q>& rhs)
 	{
@@ -508,39 +499,55 @@ struct int_tracker
 
 	constexpr self_type& operator>>=(const self_type& shift)
 	{
-		self_type copy = *this;
-		for (size_t i = 1; i < N; ++i)
+		self_type result = *this;
+
+		// Применяем сдвиг для каждого бита в shift
+		for (size_t i = 0; i < N; ++i)
 		{
-			size_t bit_index = N - i - 1;
-			copy = __execute_ternary_assign(shift.bits[bit_index], copy, copy >> i);
+			size_t shift_amount = 1 << i;  // 2^i
+			if (shift_amount >= N)  // Если сдвиг превышает размер, прекращаем
+				break;
+
+			// Если бит установлен, применяем соответствующий сдвиг
+			self_type shifted = result >> shift_amount;
+			result = __execute_ternary_assign(shift.bits[N - i - 1], shifted, result);
 		}
-		return (*this = std::move(copy));
+
+		return (*this = std::move(result));
 	}
 
 	constexpr self_type& operator<<=(const self_type& shift)
 	{
-		self_type copy = *this;
-		for (size_t i = 1; i < N; ++i)
+		self_type result = *this;
+
+		// Применяем сдвиг для каждого бита в shift
+		for (size_t i = 0; i < N; ++i)
 		{
-			size_t bit_index = N - i - 1;
-			copy = __execute_ternary_assign(shift.bits[bit_index], copy, copy << i);
+			size_t shift_amount = 1 << i;  // 2^i
+			if (shift_amount >= N)  // Если сдвиг превышает размер, прекращаем
+				break;
+
+			// Если бит установлен, применяем соответствующий сдвиг
+			self_type shifted = result << shift_amount;
+			result = __execute_ternary_assign(shift.bits[N - i - 1], shifted, result);
 		}
-		return (*this = std::move(copy));
+
+		return (*this = std::move(result));
 	}
 
-	constexpr self_type operator>>(const self_type& shift)
-	{
-		self_type copy = *this;
-		copy >>= shift;
-		return copy;
-	}
-
-	constexpr self_type operator<<(const self_type& shift)
-	{
-		self_type copy = *this;
-		copy <<= shift;
-		return copy;
-	}
+	// constexpr self_type operator>>(const self_type& shift)
+	// {
+	// 	self_type copy = *this;
+	// 	copy >>= shift;
+	// 	return copy;
+	// }
+	//
+	// constexpr self_type operator<<(const self_type& shift)
+	// {
+	// 	self_type copy = *this;
+	// 	copy <<= shift;
+	// 	return copy;
+	// }
 
 	constexpr self_type& operator+=(const self_type& rhs)
 	{
@@ -616,6 +623,11 @@ struct crs_state
 	std::deque<std::pair<counted_ptr<details::bitstate>, bool>> worklist;
 	std::map<counted_ptr<details::bitstate>, bool> assignments;
 	std::set<counted_ptr<details::bitstate>> undecided;
+
+	auto operator<=>(const crs_state& state) const
+	{
+		return assignments <=> state.assignments;
+	}
 };
 
 void propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool value)
@@ -742,9 +754,10 @@ bool solve(crs_state& crs)
 	return true;
 }
 
-crs_state resolve_bit_collisions(bit_tracker& bit, bool state)
+std::set<crs_state> resolve_bit_collisions(bit_tracker& bit, bool state)
 {
 	std::deque<crs_state> states;
+	std::set<crs_state> solutions;
 
 	states.emplace_back();
 	states.back().worklist.emplace_back(bit.bit_state, state);
@@ -757,13 +770,19 @@ crs_state resolve_bit_collisions(bit_tracker& bit, bool state)
 		if (!solve(crs))
 		{
 			states.pop_back();
-			std::cout << "Branching failed\n";
+			//std::cout << "Branching failed\n";
 			continue;
 		}
 
 		if (crs.undecided.empty())
 		{
-			return crs;
+			auto [_, success] = solutions.insert(std::move(crs));
+			states.pop_back();
+
+			if (success)
+				std::cout << "Solution found, total " << solutions.size() << "\n";
+
+			continue;
 		}
 
 		// Incomplete, need to branch.
@@ -787,28 +806,30 @@ crs_state resolve_bit_collisions(bit_tracker& bit, bool state)
 		states.push_back(std::move(true_branch_state));
 		states.push_back(std::move(false_branch_state));
 
-		std::cout << "Branched @ " << bit_ptr->max_depth << " depth\n";
+		//std::cout << "Branched @ " << bit_ptr->max_depth << " depth\n";
 	}
 
-	return {};
+	return solutions;
 }
+
+using solutions_t = std::set<crs_state>;
 
 }
 
 // Update the assert_equality functions to call the resolver
-std::map<counted_ptr<details::bitstate>, bool>
+collision_resolution::solutions_t
 	assert_equality(const bit_tracker& lhs, const bit_tracker& rhs)
 {
 	auto is_not_equal = (lhs ^ rhs);
-	auto assignments = collision_resolution::resolve_bit_collisions(is_not_equal, false);
-	if (!assignments.undecided.empty())
+	auto solutions = collision_resolution::resolve_bit_collisions(is_not_equal, false);
+	if (solutions.empty())
 		throw std::runtime_error("Unsatisfiable constraints");
 
-	return assignments.assignments;
+	return solutions;
 }
 
 template <size_t N>
-std::map<counted_ptr<details::bitstate>, bool>
+collision_resolution::solutions_t
 	assert_equality(const int_tracker<N>& lhs, const int_tracker<N>& rhs)
 {
 	bit_tracker result = 0;

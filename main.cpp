@@ -296,7 +296,7 @@ void real_md5_reversal()
 
 	for (auto& single_char : hashed_string)
 	{
-		dixelu::bitreverse::assign_assert_result(single_char, reversal_result);
+		dixelu::bitreverse::assign_assert_result(single_char, reversal_result.begin()->assignments);
 		std::cout << single_char.__to_string();
 	}
 
@@ -333,7 +333,7 @@ void real_crc32_reversal()
 
 	for (auto& single_char : hashed_string)
 	{
-		dixelu::bitreverse::assign_assert_result(single_char, reversal_result);
+		dixelu::bitreverse::assign_assert_result(single_char, reversal_result.begin()->assignments);
 		std::cout << single_char.__to_string();
 	}
 
@@ -343,25 +343,33 @@ void real_crc32_reversal()
 void bitwise_reversal_test()
 {
 	const size_t x = 0b01101010;
-	const size_t y = 0b00000001;
+	const size_t y = 0b00000011;
 
-	dixelu::bitreverse::itu32 value{x}, __y{y};
-	dixelu::bitreverse::itu32 unk = dixelu::bitreverse::unknown;
+	const dixelu::bitreverse::itu16 value{x}, __y{y};
+	const dixelu::bitreverse::itu16 unk = dixelu::bitreverse::unknown;
 
-#define BIT_OPERAND <<
+#define BIT_OPERAND +
 
-	dixelu::bitreverse::itu32 result = value BIT_OPERAND unk;
-	dixelu::bitreverse::itu32 result_expected = value BIT_OPERAND __y;
+	const dixelu::bitreverse::itu16 result = value BIT_OPERAND unk;
+	const dixelu::bitreverse::itu16 result_expected = value BIT_OPERAND __y;
 
 	auto assertion_result = dixelu::bitreverse::assert_equality(result, result_expected);
-	dixelu::bitreverse::assign_assert_result(unk, assertion_result);
 
-	std::cout << "Got:\t\t " << unk.__to_string() << std::endl;
-	std::cout << "Expected:\t " << (__y).__to_string() << std::endl;
+	uint32_t counter = 0;
+	for (auto& solution : assertion_result)
+	{
+		std::cout << "=== SOLUTION " << counter << " ===" << std::endl;
+		dixelu::bitreverse::itu16 unk_copy = unk;
+		dixelu::bitreverse::assign_assert_result(unk_copy, solution.assignments);
 
-	std::cout << "Operand result:\t" << (__y + unk).__to_string() << std::endl;
-	std::cout << "Operand real:\t" << (result_expected).__to_string() << std::endl;
+		std::cout << "Got:\t\t " << unk_copy.__to_string() << std::endl;
+		std::cout << "Expected:\t " << (__y).__to_string() << std::endl;
 
+		std::cout << "Operand result:\t " << (value BIT_OPERAND unk_copy).__to_string() << std::endl;
+		std::cout << "Operand real:\t " << (result_expected).__to_string() << std::endl;
+
+		++counter;
+	}
 }
 
 int main()
