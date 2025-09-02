@@ -337,7 +337,7 @@ struct int_tracker
 		typename std::enable_if<
 			std::is_convertible<convertable_to_int, std::uintmax_t>::value,
 			convertable_to_int>::type maxint_value) :
-		int_tracker((std::uintmax_t)maxint_value)
+		int_tracker(static_cast<std::uintmax_t>(maxint_value))
 	{
 	}
 
@@ -506,7 +506,7 @@ struct int_tracker
 		return t;
 	}
 
-	constexpr self_type& operator>>=(self_type& shift)
+	constexpr self_type& operator>>=(const self_type& shift)
 	{
 		self_type copy = *this;
 		for (size_t i = 1; i < N; ++i)
@@ -517,7 +517,7 @@ struct int_tracker
 		return (*this = std::move(copy));
 	}
 
-	constexpr self_type& operator<<=(self_type& shift)
+	constexpr self_type& operator<<=(const self_type& shift)
 	{
 		self_type copy = *this;
 		for (size_t i = 1; i < N; ++i)
@@ -526,6 +526,20 @@ struct int_tracker
 			copy = __execute_ternary_assign(shift.bits[bit_index], copy, copy << i);
 		}
 		return (*this = std::move(copy));
+	}
+
+	constexpr self_type operator>>(const self_type& shift)
+	{
+		self_type copy = *this;
+		copy >>= shift;
+		return copy;
+	}
+
+	constexpr self_type operator<<(const self_type& shift)
+	{
+		self_type copy = *this;
+		copy <<= shift;
+		return copy;
 	}
 
 	constexpr self_type& operator+=(const self_type& rhs)

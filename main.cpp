@@ -340,42 +340,28 @@ void real_crc32_reversal()
 	std::cout << std::endl;
 }
 
-void addition_reversal_test()
-{
-	const int source = 0b11011110110110110101;
-	const int increment = 0b1000011100;
-
-	dixelu::bitreverse::itu32 value = source;
-	dixelu::bitreverse::itu32 unk = dixelu::bitreverse::unknown;
-	dixelu::bitreverse::itu32 result = value + unk;
-
-	dixelu::bitreverse::itu32 result_expected = (source + increment);
-
-	auto assertion_result = dixelu::bitreverse::assert_equality(result, result_expected);
-	dixelu::bitreverse::assign_assert_result(unk, assertion_result);
-
-	std::cout << "Got:\t\t " << unk.__to_string() << std::endl;
-	std::cout << "Expected:\t " << (result_expected - source).__to_string() << std::endl;
-}
-
 void bitwise_reversal_test()
 {
-	const int x = 0b11101010;
-	const int y = 0b10000010;
+	const size_t x = 0b01101010;
+	const size_t y = 0b00000001;
 
-	dixelu::bitreverse::itu8 value{x}, __y{y};
-	dixelu::bitreverse::itu8 unk = dixelu::bitreverse::unknown;
+	dixelu::bitreverse::itu32 value{x}, __y{y};
+	dixelu::bitreverse::itu32 unk = dixelu::bitreverse::unknown;
 
-#define BIT_OPERAND &
+#define BIT_OPERAND <<
 
-	dixelu::bitreverse::itu8 result = value BIT_OPERAND unk;
-	dixelu::bitreverse::itu8 result_expected = value BIT_OPERAND __y;
+	dixelu::bitreverse::itu32 result = value BIT_OPERAND unk;
+	dixelu::bitreverse::itu32 result_expected = value BIT_OPERAND __y;
 
 	auto assertion_result = dixelu::bitreverse::assert_equality(result, result_expected);
 	dixelu::bitreverse::assign_assert_result(unk, assertion_result);
 
 	std::cout << "Got:\t\t " << unk.__to_string() << std::endl;
 	std::cout << "Expected:\t " << (__y).__to_string() << std::endl;
+
+	std::cout << "Operand result:\t" << (__y + unk).__to_string() << std::endl;
+	std::cout << "Operand real:\t" << (result_expected).__to_string() << std::endl;
+
 }
 
 int main()
@@ -398,7 +384,6 @@ int main()
 	//std::cout << res_string << std::endl;
 
 	bitwise_reversal_test();
-	//addition_reversal_test();
 
 	//hashing_test(32, md5);
 	//real_crc32_reversal();
