@@ -628,17 +628,22 @@ void propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool
 		return std::nullopt;
 	};
 
-	// if value is not yet known -> put it into undecided.
+	// if the value is not yet known -> put it into undecided.
+
+	auto v1_val = get_value(v1);
+	auto v2_val = get_value(v2);
+
+	if (v1 && !v1_val)
+		crs.undecided.insert(v1);
+	if (v2 && !v2_val)
+		crs.undecided.insert(v2);
 
 	if (op == '^')
 	{
-		// If one input is known, the other is determined
-		auto v1_val = get_value(v1);
-		auto v2_val = get_value(v2);
-
 		if (v1_val && v2_val && *v1_val ^ *v2_val != value)
 			__debugbreak();
 
+		// If one input is known, the other is determined
 		if (v1_val)
 			crs.worklist.push_back({v2, *v1_val ^ value});
 
@@ -655,10 +660,10 @@ void propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool
 			return;
 		}
 
-		if (auto v1_val = get_value(v1); v1_val && *v1_val == true)
+		if (v1_val && *v1_val == true)
 			crs.worklist.push_back({v2, false});
 
-		if (auto v2_val = get_value(v2); v2_val && *v2_val == true)
+		if (v2_val && *v2_val == true)
 			crs.worklist.push_back({v1, false});
 	}
 	else if (op == '|')
@@ -671,10 +676,10 @@ void propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool
 			return;
 		}
 
-		if (auto v1_val = get_value(v1); v1_val && *v1_val == false)
+		if (v1_val && *v1_val == false)
 			crs.worklist.push_back({v2, true});
 
-		if (auto v2_val = get_value(v2); v2_val && *v2_val == false)
+		if (v2_val && *v2_val == false)
 			crs.worklist.push_back({v1, true});
 	}
 	else if (op == '!')

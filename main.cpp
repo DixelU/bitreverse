@@ -295,9 +295,12 @@ void real_md5_reversal()
 	std::cout << is_false.bit_state->max_depth << std::endl;
 
 	for (auto& single_char : hashed_string)
+	{
 		dixelu::bitreverse::assign_assert_result(single_char, reversal_result);
+		std::cout << single_char.__to_string();
+	}
 
-	std::cout << md5_result.__to_string() << std::endl;
+	std::cout << std::endl;
 }
 
 void real_crc32_reversal()
@@ -337,6 +340,44 @@ void real_crc32_reversal()
 	std::cout << std::endl;
 }
 
+void addition_reversal_test()
+{
+	const int source = 0b11011110110110110101;
+	const int increment = 0b1000011100;
+
+	dixelu::bitreverse::itu32 value = source;
+	dixelu::bitreverse::itu32 unk = dixelu::bitreverse::unknown;
+	dixelu::bitreverse::itu32 result = value + unk;
+
+	dixelu::bitreverse::itu32 result_expected = (source + increment);
+
+	auto assertion_result = dixelu::bitreverse::assert_equality(result, result_expected);
+	dixelu::bitreverse::assign_assert_result(unk, assertion_result);
+
+	std::cout << "Got:\t\t " << unk.__to_string() << std::endl;
+	std::cout << "Expected:\t " << (result_expected - source).__to_string() << std::endl;
+}
+
+void bitwise_reversal_test()
+{
+	const int x = 0b1101000;
+	const int y = 0b10;
+
+	dixelu::bitreverse::itu32 value{x}, __y{y};
+	dixelu::bitreverse::itu32 unk = dixelu::bitreverse::unknown;
+
+#define BIT_OPERAND &
+
+	dixelu::bitreverse::itu32 result = value BIT_OPERAND unk;
+	dixelu::bitreverse::itu32 result_expected = value BIT_OPERAND __y;
+
+	auto assertion_result = dixelu::bitreverse::assert_equality(result, result_expected);
+	dixelu::bitreverse::assign_assert_result(unk, assertion_result);
+
+	std::cout << "Got:\t\t " << unk.__to_string() << std::endl;
+	std::cout << "Expected:\t " << (__y).__to_string() << std::endl;
+}
+
 int main()
 {
 	//undef_xor_undef_test();
@@ -356,20 +397,8 @@ int main()
 	//std::string res_string = res.__to_string();
 	//std::cout << res_string << std::endl;
 
-	const int source = 0b11111110111110010100;
-	const int increment = 0b1000011100;
-
-	dixelu::bitreverse::itu32 value = source;
-	dixelu::bitreverse::itu32 unk = dixelu::bitreverse::unknown;
-	dixelu::bitreverse::itu32 result = value + unk;
-
-	dixelu::bitreverse::itu32 result_expected = (source + increment);
-
-	auto assertion_result = dixelu::bitreverse::assert_equality(result, result_expected);
-	dixelu::bitreverse::assign_assert_result(unk, assertion_result);
-
-	std::cout << "Got:\t\t " << unk.__to_string() << std::endl;
-	std::cout << "Expected:\t " << (result_expected - source).__to_string() << std::endl;
+	bitwise_reversal_test();
+	//addition_reversal_test();
 
 	//hashing_test(32, md5);
 	//real_crc32_reversal();
