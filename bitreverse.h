@@ -633,10 +633,16 @@ void propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool
 	if (op == '^')
 	{
 		// If one input is known, the other is determined
-		if (auto v1_val = get_value(v1))
+		auto v1_val = get_value(v1);
+		auto v2_val = get_value(v2);
+
+		if (v1_val && v2_val && *v1_val ^ *v2_val != value)
+			__debugbreak();
+
+		if (v1_val)
 			crs.worklist.push_back({v2, *v1_val ^ value});
 
-		if (auto v2_val = get_value(v2))
+		if (v2_val)
 			crs.worklist.push_back({v1, *v2_val ^ value});
 	}
 	else if (op == '&')
