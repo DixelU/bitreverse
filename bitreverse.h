@@ -121,6 +121,11 @@ constexpr bool __call_optimisers(
 	return false; // optimisation unsuccessful
 }
 
+/*
+Got:		 ***0*010
+Expected:	 00000010
+ */
+
 constexpr counted_ptr<bitstate> make_bitstate_operation(
 	std::uint8_t opcode,
 	const counted_ptr<bitstate>& val1,

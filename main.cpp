@@ -360,16 +360,16 @@ void addition_reversal_test()
 
 void bitwise_reversal_test()
 {
-	const int x = 0b1101000;
-	const int y = 0b10;
+	const int x = 0b11101010;
+	const int y = 0b10000010;
 
-	dixelu::bitreverse::itu32 value{x}, __y{y};
-	dixelu::bitreverse::itu32 unk = dixelu::bitreverse::unknown;
+	dixelu::bitreverse::itu8 value{x}, __y{y};
+	dixelu::bitreverse::itu8 unk = dixelu::bitreverse::unknown;
 
 #define BIT_OPERAND &
 
-	dixelu::bitreverse::itu32 result = value BIT_OPERAND unk;
-	dixelu::bitreverse::itu32 result_expected = value BIT_OPERAND __y;
+	dixelu::bitreverse::itu8 result = value BIT_OPERAND unk;
+	dixelu::bitreverse::itu8 result_expected = value BIT_OPERAND __y;
 
 	auto assertion_result = dixelu::bitreverse::assert_equality(result, result_expected);
 	dixelu::bitreverse::assign_assert_result(unk, assertion_result);
