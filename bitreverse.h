@@ -656,6 +656,7 @@ void propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool
 		auto it = crs.assignments.find(s);
 		if (it != crs.assignments.end())
 			return it->second;
+
 		return std::nullopt;
 	};
 
@@ -671,9 +672,6 @@ void propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool
 
 	if (op == '^')
 	{
-		if (v1_val && v2_val && *v1_val ^ *v2_val != value)
-			__debugbreak();
-
 		// If one input is known, the other is determined
 		if (v1_val)
 			crs.worklist.push_back({v2, *v1_val ^ value});

@@ -342,16 +342,18 @@ void real_crc32_reversal()
 
 void bitwise_reversal_test()
 {
-	const size_t x = 0b01101010;
-	const size_t y = 0b00000011;
+	const size_t x = 0b01;
+	const size_t y = 0b01;
 
-	const dixelu::bitreverse::itu16 value{x}, __y{y};
-	const dixelu::bitreverse::itu16 unk = dixelu::bitreverse::unknown;
+	using cur_int = dixelu::bitreverse::int_tracker<4>;
+
+	const cur_int value{x}, __y{y};
+	const cur_int unk = dixelu::bitreverse::unknown;
 
 #define BIT_OPERAND +
 
-	const dixelu::bitreverse::itu16 result = value BIT_OPERAND unk;
-	const dixelu::bitreverse::itu16 result_expected = value BIT_OPERAND __y;
+	const cur_int result = value BIT_OPERAND unk;
+	const cur_int result_expected = value BIT_OPERAND __y;
 
 	auto assertion_result = dixelu::bitreverse::assert_equality(result, result_expected);
 
@@ -359,7 +361,9 @@ void bitwise_reversal_test()
 	for (auto& solution : assertion_result)
 	{
 		std::cout << "=== SOLUTION " << counter << " ===" << std::endl;
-		dixelu::bitreverse::itu16 unk_copy = unk;
+
+		cur_int unk_copy = unk;
+
 		dixelu::bitreverse::assign_assert_result(unk_copy, solution.assignments);
 
 		std::cout << "Got:\t\t " << unk_copy.__to_string() << std::endl;
@@ -390,6 +394,15 @@ int main()
 	//auto res = crc32<dixelu::bitreverse::int_tracker>({'c','r','c','3','2','-','x'});
 	//std::string res_string = res.__to_string();
 	//std::cout << res_string << std::endl;
+
+	// dixelu::bitreverse::itu8 x = 0b01101010;
+	// dixelu::bitreverse::itu8 y = 0b00000011;
+	// dixelu::bitreverse::itu8 z = 0b00010000;
+	//
+	// std::cout << "x: " << x.__to_string() << std::endl;
+	// std::cout << "y: " << y.__to_string() << std::endl;
+	// std::cout << "z: " << z.__to_string() << std::endl;
+	// std::cout << "S: " << (x + y + z).__to_string() << std::endl;
 
 	bitwise_reversal_test();
 
