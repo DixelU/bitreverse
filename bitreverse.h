@@ -671,6 +671,13 @@ void propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool
 	auto v1_val = get_value(v1, crs);
 	auto v2_val = get_value(v2, crs);
 
+	if (v1_val && v2_val)
+	{
+		crs.worklist.push_back({v1, *v1_val, true});
+		crs.worklist.push_back({v2, *v2_val, true});
+		return;
+	}
+
 	if (op == '^')
 	{
 		// If one input is known, the other is determined
@@ -682,13 +689,6 @@ void propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool
 	}
 	else if (op == '&')
 	{
-		if (v1_val && v2_val)
-		{
-			crs.worklist.push_back({v1, *v1_val, true});
-			crs.worklist.push_back({v2, *v2_val, true});
-			return;
-		}
-
 		// If A&B=1, then A=1 and B=1
 		if (value == true)
 		{
@@ -705,13 +705,6 @@ void propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool
 	}
 	else if (op == '|')
 	{
-		if (v1_val && v2_val)
-		{
-			crs.worklist.push_back({v1, *v1_val, true});
-			crs.worklist.push_back({v2, *v2_val, true});
-			return;
-		}
-
 		// If A|B=0, then A=0 and B=0
 		if (value == false)
 		{
