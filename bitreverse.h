@@ -692,7 +692,7 @@ void propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool
 		// If A&B=1, then A=1 and B=1
 		if (value == true)
 		{
-			crs.worklist.push_back(worklist_data{v1, true, false});
+			crs.worklist.push_back({v1, true, false});
 			crs.worklist.push_back({v2, true, false});
 			return;
 		}
@@ -722,9 +722,9 @@ void propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool
 	else if (op == '!')
 		crs.worklist.push_back({v1, !value, false});
 
-	if (v1 && !is_const_operand(v1->operation) && !v1_val)
+	if (v1 && !v1_val)
 		crs.undecided[v1] = crs_state::parent_data{state, value};
-	if (v2 && !is_const_operand(v2->operation) && !v2_val)
+	if (v2 && !v2_val)
 		crs.undecided[v2] = crs_state::parent_data{state, value};
 
 	// Base case: op is '*' (unknown) or '=' (constant). No further propagation.
@@ -840,7 +840,7 @@ void smart_assume(
 		if (!gv2.has_value())
 			branch.assignments[v2] = val2;
 
-		branch.worklist.push_back({parent, parent_value});
+		branch.worklist.push_back({parent, parent_value, false});
 		states.push_back(std::move(branch));
 	}
 }
@@ -851,7 +851,7 @@ std::set<crs_state> resolve_bit_collisions(bit_tracker& bit, bool state)
 	std::set<crs_state> solutions;
 
 	states.emplace_back();
-	states.back().worklist.emplace_back(bit.bit_state, state);
+	states.back().worklist.emplace_back(bit.bit_state, state, false);
 
 	while (!states.empty())
 	{
