@@ -121,11 +121,6 @@ constexpr bool __call_optimisers(
 	return false; // optimisation unsuccessful
 }
 
-/*
-Got:		 ***0*010
-Expected:	 00000010
- */
-
 constexpr counted_ptr<bitstate> make_bitstate_operation(
 	std::uint8_t opcode,
 	const counted_ptr<bitstate>& val1,
@@ -291,6 +286,19 @@ struct bit_tracker
 
 		return static_cast<char>(bit_state->operation);
 	}
+};
+
+template<typename T>
+struct ref_handler
+{
+	const T& ref;
+
+	ref_handler(const T& ref) : ref(ref) {};
+
+	ref_handler(T&&) = delete;
+	ref_handler(const ref_handler&) = delete;
+
+	constexpr operator const T&() const { return ref; }
 };
 
 constexpr bit_tracker execute_ternary_operation(
@@ -535,19 +543,19 @@ struct int_tracker
 		return (*this = std::move(result));
 	}
 
-	// constexpr self_type operator>>(const self_type& shift)
-	// {
-	// 	self_type copy = *this;
-	// 	copy >>= shift;
-	// 	return copy;
-	// }
-	//
-	// constexpr self_type operator<<(const self_type& shift)
-	// {
-	// 	self_type copy = *this;
-	// 	copy <<= shift;
-	// 	return copy;
-	// }
+	constexpr self_type operator>>(ref_handler<self_type> shift) const
+	{
+		self_type copy = *this;
+		copy >>= shift;
+		return copy;
+	}
+
+	constexpr self_type operator<<(ref_handler<self_type> shift) const
+	{
+		self_type copy = *this;
+		copy <<= shift;
+		return copy;
+	}
 
 	constexpr self_type& operator+=(const self_type& rhs)
 	{

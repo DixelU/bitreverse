@@ -342,18 +342,18 @@ void real_crc32_reversal()
 
 void bitwise_reversal_test()
 {
-	const size_t x = 0b01;
-	const size_t y = 0b01;
+	const size_t x = 0b101;
+	const size_t y = 0b10;
 
 	using cur_int = dixelu::bitreverse::int_tracker<4>;
 
-	const cur_int value{x}, __y{y};
+	const cur_int known_value{x}, target_result{y};
 	const cur_int unk = dixelu::bitreverse::unknown;
 
-#define BIT_OPERAND +
+#define BIT_OPERAND <<
 
-	const cur_int result = value BIT_OPERAND unk;
-	const cur_int result_expected = value BIT_OPERAND __y;
+	const cur_int result = known_value BIT_OPERAND unk;
+	const cur_int result_expected = known_value BIT_OPERAND target_result;
 
 	auto assertion_result = dixelu::bitreverse::assert_equality(result, result_expected);
 
@@ -367,9 +367,9 @@ void bitwise_reversal_test()
 		dixelu::bitreverse::assign_assert_result(unk_copy, solution.assignments);
 
 		std::cout << "Got:\t\t " << unk_copy.__to_string() << std::endl;
-		std::cout << "Expected:\t " << (__y).__to_string() << std::endl;
+		std::cout << "Expected:\t " << (target_result).__to_string() << std::endl;
 
-		std::cout << "Operand result:\t " << (value BIT_OPERAND unk_copy).__to_string() << std::endl;
+		std::cout << "Operand result:\t " << (known_value BIT_OPERAND unk_copy).__to_string() << std::endl;
 		std::cout << "Operand real:\t " << (result_expected).__to_string() << std::endl;
 
 		++counter;
