@@ -342,10 +342,10 @@ void real_crc32_reversal()
 
 void bitwise_reversal_test()
 {
-	const size_t x = 0b101;
-	const size_t y = 0b10;
+	const size_t x = 0b11;
+	const size_t y = 0b1;
 
-	using cur_int = dixelu::bitreverse::int_tracker<4>;
+	using cur_int = dixelu::bitreverse::int_tracker<3>;
 
 	const cur_int known_value{x}, target_result{y};
 	const cur_int unk = dixelu::bitreverse::unknown;

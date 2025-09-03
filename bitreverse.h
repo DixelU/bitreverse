@@ -626,17 +626,29 @@ using itu64 = int_tracker<64>;
 namespace collision_resolution
 {
 
+struct worklist_data
+{
+	counted_ptr<details::bitstate> state;
+	bool value;
+	bool force_check;
+};
+
 struct crs_state
 {
-	std::deque<std::pair<counted_ptr<details::bitstate>, bool>> worklist;
+	struct parent_data { counted_ptr<details::bitstate> parent; bool state; };
+
+	std::deque<worklist_data> worklist;
 	std::map<counted_ptr<details::bitstate>, bool> assignments;
-	std::set<counted_ptr<details::bitstate>> undecided;
+	std::map<counted_ptr<details::bitstate>, parent_data> undecided; // assumed -> parent map
 
 	auto operator<=>(const crs_state& state) const
 	{
 		return assignments <=> state.assignments;
 	}
 };
+
+bool is_const_operand(char op) { return op == '=' || op == '*'; }
+std::optional<bool> get_value(const counted_ptr<details::bitstate>& s, const crs_state& crs);
 
 void propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool value)
 {
@@ -654,46 +666,34 @@ void propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool
 		return;
 	}
 
-	auto get_value = [&](const counted_ptr<details::bitstate>& s) -> std::optional<bool>
-	{
-		if (!s)
-			return std::nullopt;
-		if (s->operation == '=')
-			return s->state != 0;
-
-		auto it = crs.assignments.find(s);
-		if (it != crs.assignments.end())
-			return it->second;
-
-		return std::nullopt;
-	};
-
 	// if the value is not yet known -> put it into undecided.
 
-	auto v1_val = get_value(v1);
-	auto v2_val = get_value(v2);
-
-	if (v1 && !v1_val)
-		crs.undecided.insert(v1);
-	if (v2 && !v2_val)
-		crs.undecided.insert(v2);
+	auto v1_val = get_value(v1, crs);
+	auto v2_val = get_value(v2, crs);
 
 	if (op == '^')
 	{
 		// If one input is known, the other is determined
 		if (v1_val)
-			crs.worklist.push_back({v2, *v1_val ^ value});
+			crs.worklist.push_back(worklist_data{v2, static_cast<bool>(*v1_val ^ value), false});
 
 		if (v2_val)
-			crs.worklist.push_back({v1, *v2_val ^ value});
+			crs.worklist.push_back(worklist_data{v1, static_cast<bool>(*v2_val ^ value), false});
 	}
 	else if (op == '&')
 	{
+		if (v1_val && v2_val)
+		{
+			crs.worklist.push_back({v1, *v1_val, true});
+			crs.worklist.push_back({v2, *v2_val, true});
+			return;
+		}
+
 		// If A&B=1, then A=1 and B=1
 		if (value == true)
 		{
-			crs.worklist.push_back({v1, true});
-			crs.worklist.push_back({v2, true});
+			crs.worklist.push_back(worklist_data{v1, true, false});
+			crs.worklist.push_back({v2, true, false});
 			return;
 		}
 
@@ -705,22 +705,34 @@ void propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool
 	}
 	else if (op == '|')
 	{
+		if (v1_val && v2_val)
+		{
+			crs.worklist.push_back({v1, *v1_val, true});
+			crs.worklist.push_back({v2, *v2_val, true});
+			return;
+		}
+
 		// If A|B=0, then A=0 and B=0
 		if (value == false)
 		{
-			crs.worklist.push_back({v1, false});
-			crs.worklist.push_back({v2, false});
+			crs.worklist.push_back({v1, false, false});
+			crs.worklist.push_back({v2, false, false});
 			return;
 		}
 
 		if (v1_val && *v1_val == false)
-			crs.worklist.push_back({v2, true});
+			crs.worklist.push_back({v2, true, false});
 
 		if (v2_val && *v2_val == false)
-			crs.worklist.push_back({v1, true});
+			crs.worklist.push_back({v1, true, false});
 	}
 	else if (op == '!')
-		crs.worklist.push_back({v1, !value});
+		crs.worklist.push_back({v1, !value, false});
+
+	if (v1 && !is_const_operand(v1->operation) && !v1_val)
+		crs.undecided[v1] = crs_state::parent_data{state, value};
+	if (v2 && !is_const_operand(v2->operation) && !v2_val)
+		crs.undecided[v2] = crs_state::parent_data{state, value};
 
 	// Base case: op is '*' (unknown) or '=' (constant). No further propagation.
 }
@@ -729,7 +741,7 @@ bool solve(crs_state& crs)
 {
 	while (!crs.worklist.empty())
 	{
-		auto [current_state, required_value] = crs.worklist.front();
+		auto [current_state, required_value, force_propagate] = crs.worklist.front();
 		crs.worklist.pop_front();
 
 		std::optional<bool> curr_val = std::nullopt;
@@ -747,7 +759,8 @@ bool solve(crs_state& crs)
 			if (*curr_val != required_value)
 				return false;
 
-			continue;
+			if (!force_propagate)
+				continue;
 		}
 
 		// Assign (skip constants, as they're fixed)
@@ -760,6 +773,85 @@ bool solve(crs_state& crs)
 	return true;
 }
 
+std::optional<bool> get_value(const counted_ptr<details::bitstate>& s, const crs_state& crs)
+{
+	if (!s)
+		return std::nullopt;
+	if (s->operation == '=')
+		return static_cast<bool>(s->state);
+
+	auto it = crs.assignments.find(s);
+	if (it != crs.assignments.end())
+		return it->second;
+
+	return std::nullopt;
+}
+
+void smart_assume(
+	std::deque<crs_state>& states,
+	crs_state original_state,
+	const crs_state::parent_data& pd)
+{
+	auto parent = pd.parent;
+	bool parent_value = pd.state;
+
+	// Smart branching based on parent's operation
+	auto v1 = parent->_1;
+	auto v2 = parent->_2;
+	char op = parent->operation;
+
+	//if (!v2)
+	//	throw std::runtime_error("Assumptions are not possible for single variable operands");
+
+	auto gv1 = get_value(v1, original_state);
+	auto gv2 = get_value(v2, original_state);
+
+	// Binary operations
+	std::vector<std::pair<bool, bool>> combos;
+
+	if (op == '&')
+	{
+		if (parent_value)
+			combos = {{true, true}};
+		else
+			combos = {{false, false}, {false, true}, {true, false}};
+	}
+	else if (op == '|')
+	{
+		if (parent_value)
+			combos = {{false, true}, {true, false}, {true, true}};
+		else
+			combos = {{false, false}};
+	}
+	else if (op == '^')
+	{
+		if (parent_value)
+			combos = {{false, true}, {true, false}};
+		else
+			combos = {{false, false}, {true, true}};
+	}
+	else
+		throw std::runtime_error("Unknown operation");
+
+	for (auto [val1, val2] : combos)
+	{
+		if (gv1.has_value() && *gv1 != val1)
+			continue;
+
+		if (gv2.has_value() && *gv2 != val2)
+			continue;
+
+		crs_state branch = original_state;
+		if (!gv1.has_value())
+			branch.assignments[v1] = val1;
+		if (!gv2.has_value())
+			branch.assignments[v2] = val2;
+
+		branch.worklist.push_back({parent, parent_value});
+		states.push_back(std::move(branch));
+	}
+}
+
 std::set<crs_state> resolve_bit_collisions(bit_tracker& bit, bool state)
 {
 	std::deque<crs_state> states;
@@ -767,7 +859,6 @@ std::set<crs_state> resolve_bit_collisions(bit_tracker& bit, bool state)
 
 	states.emplace_back();
 	states.back().worklist.emplace_back(bit.bit_state, state);
-	states.back().undecided; // this is not the correct approach get_all_variables(bit.bit_state);
 
 	while (!states.empty())
 	{
@@ -792,25 +883,19 @@ std::set<crs_state> resolve_bit_collisions(bit_tracker& bit, bool state)
 		}
 
 		// Incomplete, need to branch.
-		auto iter = crs.undecided.begin();
-		auto bit_ptr = *iter; // Pick a variable to branch on.
+		// Pick a variable to branch on.
+		auto iter = crs.undecided.cbegin();
+		const auto & parent_data = iter->second;
 
 		// Pop the current ambiguous state from the stack.
 		crs_state original_state = std::move(states.back());
 		states.pop_back();
 
-		// Create two new, clean states for each branch.
-		crs_state false_branch_state = original_state;
-		crs_state true_branch_state = std::move(original_state); // Efficiently move from the temp
+		if (!parent_data.parent)
+			throw std::runtime_error("Parent is null");
 
-		// Add the respective guess to the worklist of each new state.
-		false_branch_state.worklist.push_back({bit_ptr, false});
-		true_branch_state.worklist.push_back({bit_ptr, true});
-
-		// Push the new branches onto the stack. The one pushed last will be processed first.
-		// We push the "true" branch first, so the "false" branch is on top and gets priority.
-		states.push_back(std::move(true_branch_state));
-		states.push_back(std::move(false_branch_state));
+		original_state.assignments.erase(parent_data.parent);
+		smart_assume(states, std::move(original_state), parent_data);
 
 		//std::cout << "Branched @ " << bit_ptr->max_depth << " depth\n";
 	}
