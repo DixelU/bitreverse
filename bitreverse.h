@@ -785,7 +785,7 @@ bool solve(crs_state& crs)
 {
 	while (!crs.worklist.empty())
 	{
-		auto [current_state, required_value, force_propagate] = crs.worklist.front();
+		auto [current_state, required_value, force_propagate] = std::move(crs.worklist.front());
 		crs.worklist.pop_front();
 
 		std::optional<bool> curr_val = std::nullopt;
