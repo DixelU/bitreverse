@@ -7,7 +7,8 @@ void bitwise_reversal_test()
 	const size_t x = 0b1101;
 	const size_t y = 0b0010;
 
-	using cur_int = dixelu::bitreverse::int_tracker<19>;
+	constexpr size_t d = 19;
+	using cur_int = dixelu::bitreverse::int_tracker<d>;
 
 	const cur_int known_value{x}, target_result{y};
 	const cur_int unk = dixelu::bitreverse::unknown;
@@ -22,7 +23,7 @@ void bitwise_reversal_test()
 	const cur_int result = known_value BIT_OPERAND unk;
 	const cur_int result_expected = known_value BIT_OPERAND target_result;
 
-	auto assertion_result = dixelu::bitreverse::assert_equality(result, result_expected);
+	auto assertion_result = dixelu::bitreverse::assert_equality<d>(result, result_expected);
 
 	uint32_t counter = 0;
 	for (auto& solution : assertion_result)
@@ -31,7 +32,7 @@ void bitwise_reversal_test()
 
 		cur_int unk_copy = unk;
 
-		dixelu::bitreverse::assign_assert_result(unk_copy, solution.assignments);
+		dixelu::bitreverse::assign_assert_result<d>(unk_copy, solution.assignments);
 
 		std::cout << "Got:\t\t " << unk_copy.__to_string() << std::endl;
 		std::cout << "Expected:\t " << (target_result).__to_string() << std::endl;

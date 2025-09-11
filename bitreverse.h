@@ -302,7 +302,7 @@ struct bit_tracker
 
 	constexpr bit_tracker operator~() const
 	{
-		return bit_tracker(details::make_bitstate_operation('~', bit_state));
+		return bit_tracker(details::make_bitstate_operation('!', bit_state));
 	}
 
 	constexpr bit_tracker operator!() const
@@ -319,17 +319,19 @@ struct bit_tracker
 	}
 };
 
-template<typename T>
+template<typename T, bool _const = true>
 struct ref_handler
 {
-	const T& ref;
+	using ref_t = std::conditional<_const, const T&, T&>::type;
 
-	ref_handler(const T& ref) : ref(ref) {};
+	ref_t ref;
+
+	ref_handler(ref_t ref) : ref(ref) {};
 
 	ref_handler(T&&) = delete;
 	ref_handler(const ref_handler&) = delete;
 
-	constexpr operator const T&() const { return ref; }
+	constexpr operator ref_t() const { return ref; }
 };
 
 constexpr bit_tracker execute_ternary_operation(
@@ -669,8 +671,8 @@ struct crs_state
 	struct parent_data { counted_ptr<details::bitstate> parent; bool state; };
 
 	std::deque<worklist_data> worklist;
-	std::map<counted_ptr<details::bitstate>, bool> assignments;
-	std::map<counted_ptr<details::bitstate>, parent_data> undecided; // assumed -> parent map
+	std::map<const counted_ptr<details::bitstate>, bool> assignments;
+	std::map<const counted_ptr<details::bitstate>, parent_data> undecided; // assumed -> parent map
 
 	auto operator<=>(const crs_state& state) const
 	{
@@ -952,9 +954,9 @@ using solutions_t = std::set<crs_state>;
 
 // Update the assert_equality functions to call the resolver
 collision_resolution::solutions_t
-	assert_equality(const bit_tracker& lhs, const bit_tracker& rhs)
+	assert_equality(ref_handler<bit_tracker> lhs, ref_handler<bit_tracker> rhs)
 {
-	auto is_not_equal = (lhs ^ rhs);
+	auto is_not_equal = (lhs.ref ^ rhs.ref);
 	//details::print_bs(*is_not_equal.bit_state);
 
 	auto solutions = collision_resolution::resolve_bit_collisions(is_not_equal, false);
@@ -966,27 +968,30 @@ collision_resolution::solutions_t
 
 template <size_t N>
 collision_resolution::solutions_t
-	assert_equality(const int_tracker<N>& lhs, const int_tracker<N>& rhs)
+	assert_equality(ref_handler<int_tracker<N>> lhs, ref_handler<int_tracker<N>> rhs)
 {
 	bit_tracker result = 0;
+	bit_tracker _false(false);
+	
 	for (size_t index = 0; index < N; ++index)
-		result |= (lhs.bits[index] ^ rhs.bits[index]);
-	return assert_equality(result, 0);
+		result |= (lhs.ref.bits[index] ^ rhs.ref.bits[index]);
+
+	return assert_equality(result, _false);
 }
 
-void assign_assert_result(bit_tracker& value, const std::map<counted_ptr<details::bitstate>, bool>& assignments)
+void assign_assert_result(ref_handler<bit_tracker, false> value, const std::map<const counted_ptr<details::bitstate>, bool>& assignments)
 {
-	const auto iter = assignments.find(value.bit_state);
+	const auto iter = assignments.find(value.ref.bit_state);
 	if (iter == assignments.end())
 		return;
 
-	value = iter->second;
+	value.ref = iter->second;
 }
 
 template <size_t N>
-void assign_assert_result(int_tracker<N>& value, const std::map<counted_ptr<details::bitstate>, bool>& assignments)
+void assign_assert_result(ref_handler<int_tracker<N>, false> value, const std::map<const counted_ptr<details::bitstate>, bool>& assignments)
 {
-	for (auto& bit_tracker : value.bits)
+	for (auto& bit_tracker : value.ref.bits)
 		assign_assert_result(bit_tracker, assignments);
 }
 
