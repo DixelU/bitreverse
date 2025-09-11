@@ -1,5 +1,5 @@
-#ifndef _DIXELU_COUNTED_PTR_H
-#define _DIXELU_COUNTED_PTR_H
+#ifndef DIXELU_COUNTED_PTR_H
+#define DIXELU_COUNTED_PTR_H
 
 namespace dixelu
 {
@@ -11,7 +11,7 @@ template<typename T>
 struct enable_counted_from_this
 {
 public:
-	enable_counted_from_this() {}
+	enable_counted_from_this() = default;
 	~enable_counted_from_this() { _weak._base = nullptr; }
 	friend struct counted_ptr<T>;
 	counted_ptr<T> counted_from_this() const { return _weak.count() ? _weak : counted_ptr<T>{}; }
@@ -49,25 +49,30 @@ struct counted_ptr
 
 	constexpr ~counted_ptr() { __destroy(); }
 
-	constexpr counted_ptr& operator=(counted_ptr&& p)
+	constexpr counted_ptr& operator=(counted_ptr&& p) noexcept
 	{
-		if (p._base == _base)
+		if (this == &p) // Check for object identity
 			return *this;
 
 		__destroy();
+
 		_base = p._base;
 		p._base = nullptr;
+
 		return *this;
 	}
 
 	constexpr counted_ptr& operator=(const counted_ptr& p)
 	{
-		if (p._base == _base)
+		if (this == &p) // Check for object identity
 			return *this;
 
 		__destroy();
+
 		_base = p._base;
-		++_base->_c;
+		if (_base)
+			++_base->_c;
+
 		return *this;
 	}
 
@@ -123,7 +128,12 @@ struct counted_ptr
 	    (std::is_base_of<Q, t_type>::value || std::is_base_of<t_type, Q>::value),
 			counted_ptr<Q>>::type cast()
 	{
-		return counted_ptr<Q>();
+		counted_ptr<Q> ptr;
+
+		ptr._base = _base;
+		++ptr._base->_c;
+
+		return ptr;
 	}
 
 	template<class... Args>
@@ -139,8 +149,8 @@ struct counted_ptr
 		return ptr;
 	}
 
-	[[nodiscard]] constexpr const T* get() const { return _base ? &_base->_p : nullptr; }
-	[[nodiscard]] constexpr T* get() { return _base ? &_base->_p : nullptr; }
+	[[nodiscard]] constexpr const t_type* get() const { return _base ? &_base->_p : nullptr; }
+	[[nodiscard]] constexpr t_type* get() { return _base ? &_base->_p : nullptr; }
 
 private:
 

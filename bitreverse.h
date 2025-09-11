@@ -1,5 +1,5 @@
-#ifndef _DIXELU_BITREVERSE_H
-#define _DIXELU_BITREVERSE_H
+#ifndef DIXELU_BITREVERSE_H
+#define DIXELU_BITREVERSE_H
 
 #include <map>
 #include <deque>
@@ -255,7 +255,7 @@ struct bit_tracker
 		return *this;
 	}
 
-	constexpr bit_tracker operator=(__UNKNOWN__)
+	constexpr bit_tracker& operator=(__UNKNOWN__)
 	{
 		bit_state = details::make_bitstate_operation('*');
 		return *this;
@@ -629,7 +629,7 @@ struct int_tracker
 		return rhs_complement;
 	}
 
-	std::string __to_string() const
+	[[nodiscard]] std::string __to_string() const
 	{
 		std::string str;
 		str.reserve(N);
@@ -638,7 +638,7 @@ struct int_tracker
 		return str;
 	}
 
-	size_t __max_depth() const
+	[[nodiscard]] size_t __max_depth() const
 	{
 		size_t max_depth = 0;
 #ifndef WITHOUT_DEPTH_TRACKING
