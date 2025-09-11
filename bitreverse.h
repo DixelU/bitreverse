@@ -193,6 +193,35 @@ constexpr counted_ptr<bitstate> make_bitstate_operation(
 
 	return new_state;
 }
+
+void __print_bt(const std::string& prefix, const bitstate* node, bool isLeft)
+{
+	if( node != nullptr )
+	{
+		std::cout << prefix;
+
+		std::cout << (isLeft ? "V---" : "L---" );
+
+		// print the value of the node
+		if (node->operation == '=')
+			std::cout << static_cast<int>(node->state) << '\n';
+		else if (node->operation == '*')
+			std::cout << "* @x" << std::hex << reinterpret_cast<size_t>(node) << std::dec << "\n";
+		else
+			std::cout << static_cast<char>(node->operation) << '\n';
+
+		// enter the next tree level - left and right branch
+		__print_bt( prefix + (isLeft ? "V   " : "    "), node->_1.get(), true);
+		__print_bt( prefix + (isLeft ? "V   " : "    "), node->_2.get(), false);
+	}
+}
+
+void print_bs(const bitstate& node)
+{
+	__print_bt("", &node, false);
+	std::cout << std::flush;
+}
+
 } // namespace details
 
 struct __UNKNOWN__ {};
@@ -652,7 +681,21 @@ struct crs_state
 bool is_const_operand(char op) { return op == '=' || op == '*'; }
 std::optional<bool> get_value(const counted_ptr<details::bitstate>& s, const crs_state& crs);
 
-void propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool value)
+bool inline_execute(uint8_t operation, bool lhs, bool rhs)
+{
+	switch (operation)
+	{
+		case '&': return lhs && rhs;
+		case '|': return lhs || rhs;
+		case '^': return lhs != rhs;
+		case '!': return !lhs;
+		default:
+			__debugbreak();
+			return false;
+	}
+}
+
+bool propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool value)
 {
 	auto& op = state->operation;
 	auto& v1 = state->_1;
@@ -663,9 +706,9 @@ void propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool
 	if (op == '=')
 	{
 		if (value != state->state)
-			__debugbreak();
+			return false;
 
-		return;
+		return true;
 	}
 
 	// if the value is not yet known -> put it into undecided.
@@ -675,9 +718,12 @@ void propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool
 
 	if (v1_val && v2_val)
 	{
+		if (inline_execute(op, *v1_val, *v2_val) != value)
+			return false;
+
 		crs.worklist.push_back({v1, *v1_val, true});
 		crs.worklist.push_back({v2, *v2_val, true});
-		return;
+		return true;
 	}
 
 	if (op == '^')
@@ -696,7 +742,7 @@ void propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool
 		{
 			crs.worklist.push_back({v1, true, false});
 			crs.worklist.push_back({v2, true, false});
-			return;
+			return true;
 		}
 
 		if (v1_val && *v1_val == true)
@@ -712,7 +758,7 @@ void propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool
 		{
 			crs.worklist.push_back({v1, false, false});
 			crs.worklist.push_back({v2, false, false});
-			return;
+			return true;
 		}
 
 		if (v1_val && *v1_val == false)
@@ -730,6 +776,7 @@ void propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool
 		crs.undecided[v2] = crs_state::parent_data{state, value};
 
 	// Base case: op is '*' (unknown) or '=' (constant). No further propagation.
+	return true;
 }
 
 bool solve(crs_state& crs)
@@ -762,7 +809,8 @@ bool solve(crs_state& crs)
 		if (current_state->operation != '=')
 			crs.assignments[current_state] = required_value;
 
-		propagate(crs, current_state, required_value);
+		if (!propagate(crs, current_state, required_value))
+			return false;
 	}
 
 	return true;
@@ -907,6 +955,9 @@ collision_resolution::solutions_t
 	assert_equality(const bit_tracker& lhs, const bit_tracker& rhs)
 {
 	auto is_not_equal = (lhs ^ rhs);
+
+	details::print_bs(*is_not_equal.bit_state);
+
 	auto solutions = collision_resolution::resolve_bit_collisions(is_not_equal, false);
 	if (solutions.empty())
 		throw std::runtime_error("Unsatisfiable constraints");

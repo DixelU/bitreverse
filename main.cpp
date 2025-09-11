@@ -12,6 +12,11 @@ void bitwise_reversal_test()
 	const cur_int known_value{x}, target_result{y};
 	const cur_int unk = dixelu::bitreverse::unknown;
 
+	std::cout << "[";
+	for (auto& el : unk.bits)
+		std::cout << el.bit_state.get() << ", ";
+	std::cout << "]" << std::endl;
+
 #define BIT_OPERAND +
 
 	const cur_int result = known_value BIT_OPERAND unk;

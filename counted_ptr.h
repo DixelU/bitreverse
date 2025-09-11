@@ -139,6 +139,9 @@ struct counted_ptr
 		return ptr;
 	}
 
+	[[nodiscard]] constexpr const T* get() const { return _base ? &_base->_p : nullptr; }
+	[[nodiscard]] constexpr T* get() { return _base ? &_base->_p : nullptr; }
+
 private:
 
 	friend enable_counted_from_this<t_type>;
