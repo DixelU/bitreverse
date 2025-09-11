@@ -955,8 +955,7 @@ collision_resolution::solutions_t
 	assert_equality(const bit_tracker& lhs, const bit_tracker& rhs)
 {
 	auto is_not_equal = (lhs ^ rhs);
-
-	details::print_bs(*is_not_equal.bit_state);
+	//details::print_bs(*is_not_equal.bit_state);
 
 	auto solutions = collision_resolution::resolve_bit_collisions(is_not_equal, false);
 	if (solutions.empty())

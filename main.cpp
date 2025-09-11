@@ -4,10 +4,10 @@
 
 void bitwise_reversal_test()
 {
-	const size_t x = 0b1;
-	const size_t y = 0b1;
+	const size_t x = 0b1101;
+	const size_t y = 0b0010;
 
-	using cur_int = dixelu::bitreverse::int_tracker<3>;
+	using cur_int = dixelu::bitreverse::int_tracker<4>;
 
 	const cur_int known_value{x}, target_result{y};
 	const cur_int unk = dixelu::bitreverse::unknown;
@@ -17,7 +17,7 @@ void bitwise_reversal_test()
 		std::cout << el.bit_state.get() << ", ";
 	std::cout << "]" << std::endl;
 
-#define BIT_OPERAND +
+#define BIT_OPERAND -
 
 	const cur_int result = known_value BIT_OPERAND unk;
 	const cur_int result_expected = known_value BIT_OPERAND target_result;
