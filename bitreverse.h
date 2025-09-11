@@ -255,7 +255,7 @@ struct bit_tracker
 		return *this;
 	}
 
-	constexpr bit_tracker operator=(__UNKNOWN__ _)
+	constexpr bit_tracker operator=(__UNKNOWN__)
 	{
 		bit_state = details::make_bitstate_operation('*');
 		return *this;
@@ -746,10 +746,10 @@ bool propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool
 		}
 
 		if (v1_val && *v1_val == true)
-			crs.worklist.push_back({v2, false});
+			crs.worklist.push_back({v2, false, false});
 
 		if (v2_val && *v2_val == true)
-			crs.worklist.push_back({v1, false});
+			crs.worklist.push_back({v1, false, false});
 	}
 	else if (op == '|')
 	{

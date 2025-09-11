@@ -7,7 +7,7 @@ void bitwise_reversal_test()
 	const size_t x = 0b1101;
 	const size_t y = 0b0010;
 
-	using cur_int = dixelu::bitreverse::int_tracker<4>;
+	using cur_int = dixelu::bitreverse::int_tracker<19>;
 
 	const cur_int known_value{x}, target_result{y};
 	const cur_int unk = dixelu::bitreverse::unknown;
