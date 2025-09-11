@@ -690,7 +690,7 @@ bool inline_execute(uint8_t operation, bool lhs, bool rhs)
 		case '^': return lhs != rhs;
 		case '!': return !lhs;
 		default:
-			__debugbreak();
+			//__debugbreak();
 			return false;
 	}
 }
