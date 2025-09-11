@@ -6,7 +6,7 @@ namespace dixelu
 
 template<typename T>
 struct counted_ptr;
-
+/*
 template<typename T>
 struct enable_counted_from_this
 {
@@ -18,7 +18,7 @@ public:
 private:
 	void __set_weak(counted_ptr<T>& ptr) const { _weak._base = ptr._base; }
 	mutable counted_ptr<T> _weak;
-};
+};*/
 
 template<typename T>
 struct counted_ptr
@@ -27,8 +27,8 @@ struct counted_ptr
 
 	struct base
 	{
-		t_type _p;
-		std::size_t _c;
+		t_type _p{nullptr};
+		std::size_t _c{0};
 	};
 
 	using self_type = counted_ptr<t_type>;
@@ -123,28 +123,15 @@ struct counted_ptr
 		return 0;
 	}
 
-	template<typename Q>
-	constexpr typename std::enable_if<
-	    (std::is_base_of<Q, t_type>::value || std::is_base_of<t_type, Q>::value),
-			counted_ptr<Q>>::type cast()
-	{
-		counted_ptr<Q> ptr;
-
-		ptr._base = _base;
-		++ptr._base->_c;
-
-		return ptr;
-	}
-
 	template<class... Args>
 	inline constexpr static self_type __make_counted(Args... args)
 	{
 		self_type ptr;
 
 		ptr._base = new typename self_type::base{
-			t_type(std::forward<Args>(args)...),
-			1 };
-		__assign_counted_from_this(ptr);
+			._p = t_type(std::forward<Args>(args)...),
+			._c = 1};
+		//__assign_counted_from_this(ptr);
 
 		return ptr;
 	}
@@ -153,7 +140,7 @@ struct counted_ptr
 	[[nodiscard]] constexpr t_type* get() { return _base ? &_base->_p : nullptr; }
 
 private:
-
+/*
 	friend enable_counted_from_this<t_type>;
 
 	template<typename Q = t_type, class... Args>
@@ -167,14 +154,16 @@ private:
 	template<typename Q = t_type, class... Args>
 	inline constexpr static typename std::enable_if<(!std::is_base_of<enable_counted_from_this<Q>, Q>::value), void*>::type
 		__assign_counted_from_this(counted_ptr<Q>&) { return nullptr; }
-
+		*/
 	constexpr void __destroy()
 	{
 		if (_base)
 		{
-			auto& count = --_base->_c;
+			auto count = --_base->_c;
+
 			if (!count)
 				delete _base;
+
 			_base = nullptr;
 		}
 	}

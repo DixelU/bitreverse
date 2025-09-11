@@ -27,8 +27,8 @@ constexpr bool enable_optimisers = true;
 
 struct bitstate
 {
-	counted_ptr<bitstate> _1;
-	counted_ptr<bitstate> _2;
+	counted_ptr<bitstate> _1{};
+	counted_ptr<bitstate> _2{};
 
 #ifndef WITHOUT_DEPTH_TRACKING
 	size_t max_depth{0};
@@ -45,9 +45,9 @@ constexpr std::pair<bool, char> extract_value_and_operation(std::uint8_t opcode)
 	return {value, operation};
 }
 
-constexpr std::array<std::uint8_t, 128> get_operation_args_count()
+constexpr std::array<std::uint8_t, 256> get_operation_args_count()
 {
-	std::array<std::uint8_t, 128> a{};
+	std::array<std::uint8_t, 256> a{};
 	for (auto& el : a)
 		el = 0;
 
@@ -668,7 +668,11 @@ struct worklist_data
 
 struct crs_state
 {
-	struct parent_data { counted_ptr<details::bitstate> parent; bool state; };
+	struct parent_data 
+	{ 
+		counted_ptr<details::bitstate> parent{};
+		bool state{false};
+	};
 
 	std::deque<worklist_data> worklist;
 	std::map<const counted_ptr<details::bitstate>, bool> assignments;
@@ -679,9 +683,6 @@ struct crs_state
 		return assignments <=> state.assignments;
 	}
 };
-
-bool is_const_operand(char op) { return op == '=' || op == '*'; }
-std::optional<bool> get_value(const counted_ptr<details::bitstate>& s, const crs_state& crs);
 
 bool inline_execute(uint8_t operation, bool lhs, bool rhs)
 {
@@ -697,11 +698,14 @@ bool inline_execute(uint8_t operation, bool lhs, bool rhs)
 	}
 }
 
+bool is_const_operand(char op) { return op == '=' || op == '*'; }
+std::optional<bool> get_value(const counted_ptr<details::bitstate>& s, const crs_state& crs);
+
 bool propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool value)
 {
 	auto& op = state->operation;
-	auto& v1 = state->_1;
-	auto& v2 = state->_2;
+	const auto& v1 = state->_1;
+	const auto& v2 = state->_2;
 
 	crs.undecided.erase(state);
 
