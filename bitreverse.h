@@ -5,8 +5,10 @@
 #include <deque>
 #include <array>
 #include <string>
+#include <vector>
 #include <memory>
 #include <utility>
+#include <iostream>
 #include <stdexcept>
 #include <cinttypes>
 #include <optional>
