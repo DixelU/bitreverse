@@ -901,6 +901,72 @@ void smart_assume(
 	}
 }
 
+void retain_only_unknown_assignments(crs_state& state)
+{
+	for (auto it = state.assignments.begin(); it != state.assignments.end();)
+	{
+		const auto& node = it->first;
+		if (!node || node->operation != '*')
+		{
+			it = state.assignments.erase(it);
+			continue;
+		}
+
+		++it;
+	}
+}
+
+std::optional<bool> evaluate_from_unknowns(
+	const counted_ptr<details::bitstate>& node,
+	const std::map<const counted_ptr<details::bitstate>, bool>& assignments,
+	std::map<const counted_ptr<details::bitstate>, std::optional<bool>>& memo)
+{
+	if (!node)
+		return std::nullopt;
+
+	const auto memo_it = memo.find(node);
+	if (memo_it != memo.end())
+		return memo_it->second;
+
+	std::optional<bool> value = std::nullopt;
+	const char op = node->operation;
+
+	if (op == '=')
+		value = static_cast<bool>(node->state);
+	else if (op == '*')
+	{
+		const auto assignment_it = assignments.find(node);
+		if (assignment_it != assignments.end())
+			value = assignment_it->second;
+	}
+	else if (op == '!')
+	{
+		const auto lhs = evaluate_from_unknowns(node->_1, assignments, memo);
+		if (lhs.has_value())
+			value = !(*lhs);
+	}
+	else if (op == '&' || op == '|' || op == '^')
+	{
+		const auto lhs = evaluate_from_unknowns(node->_1, assignments, memo);
+		const auto rhs = evaluate_from_unknowns(node->_2, assignments, memo);
+		if (lhs.has_value() && rhs.has_value())
+			value = inline_execute(op, *lhs, *rhs);
+	}
+
+	memo.emplace(node, value);
+	return value;
+}
+
+bool solution_matches_target(
+	const counted_ptr<details::bitstate>& root,
+	bool expected,
+	const std::map<const counted_ptr<details::bitstate>, bool>& assignments)
+{
+	std::map<const counted_ptr<details::bitstate>, std::optional<bool>> memo;
+	const auto value = evaluate_from_unknowns(root, assignments, memo);
+	return value.has_value() && *value == expected;
+}
+
 std::set<crs_state> resolve_bit_collisions(bit_tracker& bit, bool state)
 {
 	std::deque<crs_state> states;
@@ -922,8 +988,15 @@ std::set<crs_state> resolve_bit_collisions(bit_tracker& bit, bool state)
 
 		if (crs.undecided.empty())
 		{
-			auto [_, success] = solutions.insert(std::move(crs));
+			crs_state solved = std::move(crs);
 			states.pop_back();
+
+			if (!solution_matches_target(bit.bit_state, state, solved.assignments))
+				continue;
+
+			retain_only_unknown_assignments(solved);
+
+			auto [_, success] = solutions.insert(std::move(solved));
 
 			if (success)
 				std::cout << "Solution found, total " << solutions.size() << "\n";
