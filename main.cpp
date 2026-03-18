@@ -119,6 +119,8 @@ int main()
 	// std::cout << "S: " << (x + y + z).__to_string() << std::endl;
 
 	bitwise_reversal_test();
+	
+	real_crc32_reversal();
 
 	return 0;
 }

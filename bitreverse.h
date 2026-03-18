@@ -668,15 +668,15 @@ struct worklist_data
 
 struct crs_state
 {
-	struct parent_data 
-	{ 
+	struct parent_data
+	{
 		counted_ptr<details::bitstate> parent{};
 		bool state{false};
 	};
 
 	std::deque<worklist_data> worklist;
 	std::map<const counted_ptr<details::bitstate>, bool> assignments;
-	std::map<const counted_ptr<details::bitstate>, parent_data> undecided; // assumed -> parent map
+	std::map<const counted_ptr<details::bitstate>, parent_data> undecided; // unresolved parent constraints
 
 	auto operator<=>(const crs_state& state) const
 	{
@@ -776,10 +776,8 @@ bool propagate(crs_state &crs, const counted_ptr<details::bitstate>& state, bool
 	else if (op == '!')
 		crs.worklist.push_back({v1, !value, false});
 
-	if (v1 && !v1_val)
-		crs.undecided[v1] = crs_state::parent_data{state, value};
-	if (v2 && !v2_val)
-		crs.undecided[v2] = crs_state::parent_data{state, value};
+	if (op != '!' && ((v1 && !v1_val) || (v2 && !v2_val)))
+		crs.undecided[state] = crs_state::parent_data{state, value};
 
 	// Base case: op is '*' (unknown) or '=' (constant). No further propagation.
 	return true;
@@ -901,6 +899,63 @@ void smart_assume(
 	}
 }
 
+size_t unresolved_branch_count(const crs_state& state, const crs_state::parent_data& pd)
+{
+	const auto parent = pd.parent;
+	const auto gv1 = get_value(parent->_1, state);
+	const auto gv2 = get_value(parent->_2, state);
+
+	size_t count = 0;
+	const auto accepts = [&](bool lhs, bool rhs)
+	{
+		if (gv1.has_value() && *gv1 != lhs)
+			return false;
+		if (gv2.has_value() && *gv2 != rhs)
+			return false;
+		return true;
+	};
+
+	switch (parent->operation)
+	{
+		case '&':
+			if (pd.state)
+				count += accepts(true, true);
+			else
+			{
+				count += accepts(false, false);
+				count += accepts(false, true);
+				count += accepts(true, false);
+			}
+			break;
+		case '|':
+			if (pd.state)
+			{
+				count += accepts(false, true);
+				count += accepts(true, false);
+				count += accepts(true, true);
+			}
+			else
+				count += accepts(false, false);
+			break;
+		case '^':
+			if (pd.state)
+			{
+				count += accepts(false, true);
+				count += accepts(true, false);
+			}
+			else
+			{
+				count += accepts(false, false);
+				count += accepts(true, true);
+			}
+			break;
+		default:
+			return 4;
+	}
+
+	return count;
+}
+
 void retain_only_unknown_assignments(crs_state& state)
 {
 	for (auto it = state.assignments.begin(); it != state.assignments.end();)
@@ -1005,8 +1060,18 @@ std::set<crs_state> resolve_bit_collisions(bit_tracker& bit, bool state)
 		}
 
 		// Incomplete, need to branch.
-		// Pick a variable to branch on.
+		// Pick the unresolved parent with the fewest valid branches.
 		auto iter = crs.undecided.cbegin();
+		size_t best_count = unresolved_branch_count(crs, iter->second);
+		for (auto it = std::next(iter); it != crs.undecided.cend(); ++it)
+		{
+			const size_t candidate_count = unresolved_branch_count(crs, it->second);
+			if (candidate_count < best_count)
+			{
+				best_count = candidate_count;
+				iter = it;
+			}
+		}
 		const auto & parent_data = iter->second;
 
 		// Pop the current ambiguous state from the stack.
@@ -1016,7 +1081,7 @@ std::set<crs_state> resolve_bit_collisions(bit_tracker& bit, bool state)
 		if (!parent_data.parent)
 			throw std::runtime_error("Parent is null");
 
-		original_state.assignments.erase(parent_data.parent);
+		original_state.assignments.erase(parent_data.parent); // force recompute through branch assumptions
 		smart_assume(states, std::move(original_state), parent_data);
 
 		//std::cout << "Branched @ " << bit_ptr->max_depth << " depth\n";
