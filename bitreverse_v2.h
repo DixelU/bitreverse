@@ -14,6 +14,8 @@
 #include <string>
 #include <iostream>
 
+#include "counted_ptr.h"
+
 namespace dixelu
 {
 
@@ -66,7 +68,7 @@ class sat_solver
 		size_t i = 0;
 		while (i < _trail.size())
 		{
-			literal_t lit = _trail[i++];
+			//literal_t lit = _trail[i++];
 			for (const auto& clause : _clauses)
 			{
 				if (!is_satisfied(clause))
@@ -140,6 +142,7 @@ class sat_solver
 			int32_t idx = decision_var;
 			if (idx >= static_cast<int32_t>(_assignment.size()))
 				_assignment.resize(idx + 1, -1);
+
 			_assignment[idx] = val;
 			_trail.push_back(make_literal(decision_var, val == 0));
 
@@ -252,7 +255,7 @@ namespace expr
 {
 
 struct node;
-using node_ptr = std::shared_ptr<node>;
+using node_ptr = counted_ptr<node>;
 
 struct node
 {
@@ -272,19 +275,19 @@ struct node
 	node_ptr child2;
 	int32_t sat_var = -1; // SAT variable index
 
-	node(op_t op, node_ptr c1 = nullptr, node_ptr c2 = nullptr)
+	node(op_t op, node_ptr c1 = {}, node_ptr c2 = {})
 		: operation(op), child1(c1), child2(c2) {}
 
 	static node_ptr make_const(bool value)
 	{
-		static auto false_node = std::make_shared<node>(op_t::CONST_FALSE);
-		static auto true_node = std::make_shared<node>(op_t::CONST_TRUE);
+		static auto false_node = make_counted<node>(op_t::CONST_FALSE);
+		static auto true_node = make_counted<node>(op_t::CONST_TRUE);
 		return value ? true_node : false_node;
 	}
 
 	static node_ptr make_unknown()
 	{
-		return std::make_shared<node>(op_t::UNKNOWN);
+		return make_counted<node>(op_t::UNKNOWN);
 	}
 
 	static node_ptr make_not(node_ptr child)
@@ -295,7 +298,7 @@ struct node
 			return make_const(false);
 		if (child->operation == op_t::NOT)
 			return child->child1; // Double negation
-		return std::make_shared<node>(op_t::NOT, child);
+		return make_counted<node>(op_t::NOT, child);
 	}
 
 	static node_ptr make_and(node_ptr left, node_ptr right)
@@ -311,7 +314,7 @@ struct node
 		// Canonical ordering for better sharing
 		if (left.get() > right.get())
 			std::swap(left, right);
-		return std::make_shared<node>(op_t::AND, left, right);
+		return make_counted<node>(op_t::AND, left, right);
 	}
 
 	static node_ptr make_or(node_ptr left, node_ptr right)
@@ -326,7 +329,7 @@ struct node
 			return left;
 		if (left.get() > right.get())
 			std::swap(left, right);
-		return std::make_shared<node>(op_t::OR, left, right);
+		return make_counted<node>(op_t::OR, left, right);
 	}
 
 	static node_ptr make_xor(node_ptr left, node_ptr right)
@@ -347,7 +350,7 @@ struct node
 			return make_const(true);
 		if (left.get() > right.get())
 			std::swap(left, right);
-		return std::make_shared<node>(op_t::XOR, left, right);
+		return make_counted<node>(op_t::XOR, left, right);
 	}
 };
 
@@ -367,7 +370,7 @@ public:
 
 	sat::literal_t encode(node_ptr n)
 	{
-		if (_processed.count(n))
+		if (_processed.contains(n))
 			return _node_to_lit[n];
 
 		sat::literal_t lit = sat::make_literal(_solver.new_variable());
@@ -377,43 +380,43 @@ public:
 
 		switch (n->operation)
 		{
-		case node::op_t::CONST_FALSE:
-			_solver.add_unit_clause(sat::lit_negate(lit)); // lit must be false
-			break;
-		case node::op_t::CONST_TRUE:
-			_solver.add_unit_clause(lit); // lit must be true
-			break;
-		case node::op_t::UNKNOWN:
-			_unknowns.insert(n);
-			// No constraints - unknown is a free variable
-			break;
-		case node::op_t::NOT:
-		{
-			sat::literal_t child_lit = encode(n->child1);
-			_solver.encode_not(child_lit, lit);
-			break;
-		}
-		case node::op_t::AND:
-		{
-			sat::literal_t left_lit = encode(n->child1);
-			sat::literal_t right_lit = encode(n->child2);
-			_solver.encode_and(left_lit, right_lit, lit);
-			break;
-		}
-		case node::op_t::OR:
-		{
-			sat::literal_t left_lit = encode(n->child1);
-			sat::literal_t right_lit = encode(n->child2);
-			_solver.encode_or(left_lit, right_lit, lit);
-			break;
-		}
-		case node::op_t::XOR:
-		{
-			sat::literal_t left_lit = encode(n->child1);
-			sat::literal_t right_lit = encode(n->child2);
-			_solver.encode_xor(left_lit, right_lit, lit);
-			break;
-		}
+			case node::op_t::CONST_FALSE:
+				_solver.add_unit_clause(sat::lit_negate(lit)); // lit must be false
+				break;
+			case node::op_t::CONST_TRUE:
+				_solver.add_unit_clause(lit); // lit must be true
+				break;
+			case node::op_t::UNKNOWN:
+				_unknowns.insert(n);
+				// No constraints - unknown is a free variable
+				break;
+			case node::op_t::NOT:
+			{
+				sat::literal_t child_lit = encode(n->child1);
+				_solver.encode_not(child_lit, lit);
+				break;
+			}
+			case node::op_t::AND:
+			{
+				sat::literal_t left_lit = encode(n->child1);
+				sat::literal_t right_lit = encode(n->child2);
+				_solver.encode_and(left_lit, right_lit, lit);
+				break;
+			}
+			case node::op_t::OR:
+			{
+				sat::literal_t left_lit = encode(n->child1);
+				sat::literal_t right_lit = encode(n->child2);
+				_solver.encode_or(left_lit, right_lit, lit);
+				break;
+			}
+			case node::op_t::XOR:
+			{
+				sat::literal_t left_lit = encode(n->child1);
+				sat::literal_t right_lit = encode(n->child2);
+				_solver.encode_xor(left_lit, right_lit, lit);
+				break;
+			}
 		}
 
 		return lit;
@@ -445,7 +448,7 @@ using solutions_t = std::set<solution>;
 // ============================================================================
 
 struct bit_tracker;
-using bit_tracker_ptr = std::shared_ptr<expr::node>;
+using bit_tracker_ptr = counted_ptr<expr::node>;
 
 struct bit_tracker
 {
@@ -554,7 +557,7 @@ struct int_tracker
 	template <size_t M>
 	int_tracker(const int_tracker<M>& other)
 	{
-		size_t start = (N > M) ? (N - M) : 0;
+		//size_t start = (N > M) ? (N - M) : 0;
 		size_t other_start = (M > N) ? (M - N) : 0;
 		for (size_t i = 0; i < N && (other_start + i) < M; ++i)
 			bits[i] = other.bits[other_start + i];
@@ -848,6 +851,7 @@ inline expr::solutions_t assert_equality(const bit_tracker& lhs, const bit_track
 				blocking_clause.push_back(value ? sat::lit_negate(lit) : lit);
 			}
 		}
+
 		if (!blocking_clause.empty())
 			solver.add_clause(blocking_clause);
 		else
@@ -858,7 +862,7 @@ inline expr::solutions_t assert_equality(const bit_tracker& lhs, const bit_track
 }
 
 template <size_t N>
-inline expr::solutions_t assert_equality(const int_tracker<N>& lhs, const int_tracker<N>& rhs)
+expr::solutions_t assert_equality(const int_tracker<N>& lhs, const int_tracker<N>& rhs)
 {
 	bit_tracker result(false);
 	for (size_t i = 0; i < N; ++i)
@@ -878,7 +882,7 @@ inline void apply_solution(bit_tracker& bt, const expr::solution& sol)
 }
 
 template <size_t N>
-inline void apply_solution(int_tracker<N>& it, const expr::solution& sol)
+void apply_solution(int_tracker<N>& it, const expr::solution& sol)
 {
 	for (auto& bit : it.bits)
 		apply_solution(bit, sol);
@@ -891,7 +895,7 @@ inline void assign_assert_result(bit_tracker& value, const expr::solution& sol)
 }
 
 template <size_t N>
-inline void assign_assert_result(int_tracker<N>& value, const expr::solution& sol)
+void assign_assert_result(int_tracker<N>& value, const expr::solution& sol)
 {
 	apply_solution(value, sol);
 }

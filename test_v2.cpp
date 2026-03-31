@@ -1,8 +1,9 @@
 #include <iostream>
+
 #include "bitreverse_v2.h"
 
 template<template<size_t> typename int_tracker>
-int_tracker<32> crc32(std::vector<int_tracker<8>> message)
+int_tracker<32> crc32(const std::vector<int_tracker<8>>& message)
 {
 	int_tracker<32> byte, mask;
 
@@ -20,6 +21,7 @@ int_tracker<32> crc32(std::vector<int_tracker<8>> message)
 			crc = (crc >> 1) ^ (mask_const & mask);
 		}
 	}
+
 	return ~crc;
 }
 
