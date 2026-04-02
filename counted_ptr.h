@@ -6,32 +6,45 @@ namespace dixelu
 
 template<typename T>
 struct counted_ptr;
-/*
+
+template<typename T>
+struct counted_control_block
+{
+	using t_type = std::remove_cvref_t<T>;
+	t_type _p{};
+	std::size_t _c{0};
+};
+
 template<typename T>
 struct enable_counted_from_this
 {
-public:
-	enable_counted_from_this() = default;
-	~enable_counted_from_this() { _weak._base = nullptr; }
-	friend struct counted_ptr<T>;
-	counted_ptr<T> counted_from_this() const { return _weak.count() ? _weak : counted_ptr<T>{}; }
+	using t_type = std::remove_cvref_t<T>;
+
+	friend struct counted_ptr<t_type>;
+
+	counted_ptr<t_type> counted_from_this() const
+	{
+		if (!_ctrl || !_ctrl->_c)
+			return {};
+
+		++_ctrl->_c;
+		counted_ptr<t_type> result;
+		result._base = _ctrl;
+		return result;
+	}
+
 private:
-	void __set_weak(counted_ptr<T>& ptr) const { _weak._base = ptr._base; }
-	mutable counted_ptr<T> _weak;
-};*/
+	void set_control_block(counted_control_block<t_type>* ctrl) const { _ctrl = ctrl; }
+	mutable counted_control_block<t_type>* _ctrl = nullptr;
+};
 
 template<typename T>
 struct counted_ptr
 {
-	using t_type = std::remove_cvref<T>::type;
-
-	struct base
-	{
-		t_type _p{nullptr};
-		std::size_t _c{0};
-	};
-
+	using t_type = std::remove_cvref_t<T>;
 	using self_type = counted_ptr<t_type>;
+
+	friend struct enable_counted_from_this<t_type>;
 
 	constexpr counted_ptr() : _base(nullptr) {};
 	constexpr counted_ptr(counted_ptr&& p) noexcept :
@@ -47,14 +60,14 @@ struct counted_ptr
 			++_base->_c;
 	}
 
-	constexpr ~counted_ptr() { __destroy(); }
+	constexpr ~counted_ptr() { destroy_(); }
 
 	constexpr counted_ptr& operator=(counted_ptr&& p) noexcept
 	{
-		if (this == &p) // Check for object identity
+		if (this == &p)
 			return *this;
 
-		__destroy();
+		destroy_();
 
 		_base = p._base;
 		p._base = nullptr;
@@ -64,10 +77,10 @@ struct counted_ptr
 
 	constexpr counted_ptr& operator=(const counted_ptr& p)
 	{
-		if (this == &p) // Check for object identity
+		if (this == &p)
 			return *this;
 
-		__destroy();
+		destroy_();
 
 		_base = p._base;
 		if (_base)
@@ -76,45 +89,18 @@ struct counted_ptr
 		return *this;
 	}
 
-	constexpr operator bool() const
-	{
-		return _base;
-	}
+	constexpr operator bool() const { return _base; }
 
-	constexpr t_type& operator*()
-	{
-		return _base->_p;
-	}
+	constexpr t_type& operator*() { return _base->_p; }
+	constexpr const t_type& operator*() const { return _base->_p; }
 
-	constexpr const t_type& operator*() const
-	{
-		return _base->_p;
-	}
+	constexpr bool operator<(const counted_ptr& rhs) const { return _base < rhs._base; }
+	constexpr bool operator==(const counted_ptr& rhs) const { return _base == rhs._base; }
 
-	constexpr bool operator<(const counted_ptr& rhs) const
-	{
-		return _base < rhs._base;
-	}
+	constexpr t_type* operator->() { return &_base->_p; }
+	constexpr const t_type* operator->() const { return &_base->_p; }
 
-	constexpr bool operator==(const counted_ptr& rhs) const
-	{
-		return _base == rhs._base;
-	}
-
-	constexpr t_type* operator->()
-	{
-		return &_base->_p;
-	}
-
-	constexpr const t_type* operator->() const
-	{
-		return &_base->_p;
-	}
-
-	constexpr void reset()
-	{
-		__destroy();
-	}
+	constexpr void reset() { destroy_(); }
 
 	[[nodiscard]] constexpr std::size_t count() const
 	{
@@ -124,15 +110,14 @@ struct counted_ptr
 	}
 
 	template<class... Args>
-	inline constexpr static self_type __make_counted(Args... args)
+	constexpr static self_type make_counted(Args... args)
 	{
 		self_type ptr;
-
-		ptr._base = new typename self_type::base{
+		ptr._base = new counted_control_block<t_type>{
 			._p = t_type(std::forward<Args>(args)...),
 			._c = 1};
-		//__assign_counted_from_this(ptr);
 
+		assign_ctrl_block(ptr);
 		return ptr;
 	}
 
@@ -140,22 +125,20 @@ struct counted_ptr
 	[[nodiscard]] constexpr t_type* get() { return _base ? &_base->_p : nullptr; }
 
 private:
-/*
-	friend enable_counted_from_this<t_type>;
-
-	template<typename Q = t_type, class... Args>
-	inline constexpr static typename std::enable_if<(std::is_base_of<enable_counted_from_this<Q>, Q>::value), void*>::type
-		__assign_counted_from_this(counted_ptr<Q>& ptr)
+	template<typename Q = t_type>
+	constexpr static
+	std::enable_if_t<std::is_base_of_v<enable_counted_from_this<Q>, Q>>
+	assign_ctrl_block(counted_ptr<Q>& ptr)
 	{
-		ptr->__set_weak(ptr);
-		return nullptr;
+		ptr->set_ctrl_(ptr._base);
 	}
 
-	template<typename Q = t_type, class... Args>
-	inline constexpr static typename std::enable_if<(!std::is_base_of<enable_counted_from_this<Q>, Q>::value), void*>::type
-		__assign_counted_from_this(counted_ptr<Q>&) { return nullptr; }
-		*/
-	constexpr void __destroy()
+	template<typename Q = t_type>
+	constexpr static
+	std::enable_if_t<!std::is_base_of_v<enable_counted_from_this<Q>, Q>>
+	assign_ctrl_block(counted_ptr<Q>&) {}
+
+	constexpr void destroy_()
 	{
 		if (_base)
 		{
@@ -168,16 +151,16 @@ private:
 		}
 	}
 
-	base* _base;
+	counted_control_block<t_type>* _base;
 };
 
 
 template<typename T, class... Args>
 constexpr counted_ptr<T> make_counted(Args&&... args)
 {
-	return counted_ptr<T>::__make_counted(std::forward<Args>(args)...);
+	return counted_ptr<T>::make_counted_(std::forward<Args>(args)...);
 }
 
 } // namespace dixelu
 
-#endif //* _DIXELU_COUNTED_PTR_H
+#endif // DIXELU_COUNTED_PTR_H
