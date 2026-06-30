@@ -4,6 +4,7 @@
 #include <map>
 #include <deque>
 #include <array>
+#include <unordered_map>
 #include <string>
 #include <vector>
 #include <memory>
@@ -1092,16 +1093,261 @@ std::set<crs_state> resolve_bit_collisions(bit_tracker& bit, bool state)
 
 using solutions_t = std::set<crs_state>;
 
+// ---------------------------------------------------------------------------
+// DPLL-style core.
+//
+// Differences from resolve_bit_collisions above:
+//   * Branches only on the '*' (unknown) leaves, never on intermediate gates.
+//   * Boolean constraint propagation (BCP) visits each node at most once per
+//     assignment via an explicit work-queue + occurrence lists, instead of
+//     re-walking already-settled sub-trees.
+//   * Backtracking uses a single mutable state with an undo trail, instead of
+//     deep-copying the whole crs_state per branch.
+//
+// Semantics: enumerates *all complete assignments* of the reachable unknown
+// leaves that drive the root to `target` (a don't-care leaf is enumerated in
+// both states). Pass first_only=true to stop at the first solution.
+// ---------------------------------------------------------------------------
+namespace dpll
+{
+
+struct engine
+{
+	using node_t = const details::bitstate*;
+
+	counted_ptr<details::bitstate> root_ptr;
+	bool target;
+	bool first_only;
+
+	std::vector<counted_ptr<details::bitstate>> vars;       // '*' decision leaves
+	std::unordered_map<node_t, std::vector<node_t>> parents; // node -> gates that read it
+	std::unordered_map<node_t, bool> value;                 // current assignments
+	std::vector<node_t> trail;                              // undo log
+	solutions_t solutions;
+
+	engine(counted_ptr<details::bitstate> root, bool tgt, bool first) :
+		root_ptr(std::move(root)), target(tgt), first_only(first) {}
+
+	std::optional<bool> value_of(node_t n) const
+	{
+		if (!n)
+			return std::nullopt;
+		if (n->operation == '=')
+			return static_cast<bool>(n->state);
+		auto it = value.find(n);
+		if (it != value.end())
+			return it->second;
+		return std::nullopt;
+	}
+
+	void build()
+	{
+		std::set<node_t> seen;
+		std::deque<counted_ptr<details::bitstate>> stack;
+		stack.push_back(root_ptr);
+
+		while (!stack.empty())
+		{
+			auto cur = std::move(stack.back());
+			stack.pop_back();
+
+			node_t raw = cur.get();
+			if (!raw || !seen.insert(raw).second)
+				continue;
+
+			const std::uint8_t op = cur->operation;
+			if (op == '*')
+				vars.push_back(cur);
+
+			const std::uint8_t argc = details::operation_args_count[op];
+			const counted_ptr<details::bitstate>* ch[2] = {&cur->_1, &cur->_2};
+			for (std::uint8_t i = 0; i < argc; ++i)
+			{
+				if (node_t craw = ch[i]->get())
+				{
+					parents[craw].push_back(raw);
+					stack.push_back(*ch[i]);
+				}
+			}
+		}
+	}
+
+	bool set_value(node_t n, bool val, std::deque<node_t>& q)
+	{
+		auto cur = value_of(n);
+		if (cur)
+			return *cur == val;
+		value[n] = val;
+		trail.push_back(n);
+		q.push_back(n);
+		return true;
+	}
+
+	static bool relation_holds(std::uint8_t op, bool g, bool a, bool b)
+	{
+		switch (op)
+		{
+			case '!': return g == (!a);
+			case '^': return g == (a ^ b);
+			case '&': return g == (a & b);
+			case '|': return g == (a | b);
+			default:  return true;
+		}
+	}
+
+	// Enforce the local relation of gate g over {g, inputs}: detect conflicts
+	// and force any input/output that is uniquely determined.
+	bool imply(node_t g, std::deque<node_t>& q)
+	{
+		const std::uint8_t op = g->operation;
+		if (op == '=' || op == '*')
+			return true;
+
+		const node_t nodes[3] = {g, g->_1.get(), (op == '!' ? nullptr : g->_2.get())};
+		const size_t cnt = (op == '!') ? 2 : 3;
+
+		std::optional<bool> known[3];
+		for (size_t i = 0; i < cnt; ++i)
+			known[i] = value_of(nodes[i]);
+
+		bool feasible = false;
+		int forced[3] = {-1, -1, -1}; // -1 unseen, 0/1 single value, 2 ambiguous
+		for (int mask = 0; mask < (1 << cnt); ++mask)
+		{
+			bool vals[3] = {false, false, false};
+			bool ok = true;
+			for (size_t i = 0; i < cnt && ok; ++i)
+			{
+				vals[i] = (mask >> i) & 1;
+				if (known[i] && *known[i] != vals[i])
+					ok = false;
+			}
+			if (!ok || !relation_holds(op, vals[0], vals[1], cnt == 3 ? vals[2] : false))
+				continue;
+
+			feasible = true;
+			for (size_t i = 0; i < cnt; ++i)
+				forced[i] = (forced[i] == -1) ? vals[i] : (forced[i] != vals[i] ? 2 : forced[i]);
+		}
+
+		if (!feasible)
+			return false; // contradiction
+
+		for (size_t i = 0; i < cnt; ++i)
+			if (!known[i] && forced[i] != 2)
+				if (!set_value(nodes[i], forced[i] == 1, q))
+					return false;
+
+		return true;
+	}
+
+	bool propagate(std::deque<node_t>& q)
+	{
+		while (!q.empty())
+		{
+			const node_t n = q.front();
+			q.pop_front();
+
+			if (!imply(n, q)) // n as the output of its own gate
+				return false;
+
+			auto it = parents.find(n);
+			if (it != parents.end())
+				for (node_t p : it->second) // n as an input of each parent gate
+					if (!imply(p, q))
+						return false;
+		}
+		return true;
+	}
+
+	bool assign(node_t n, bool val)
+	{
+		std::deque<node_t> q;
+		if (!set_value(n, val, q))
+			return false;
+		return propagate(q);
+	}
+
+	void undo_to(size_t mark)
+	{
+		while (trail.size() > mark)
+		{
+			value.erase(trail.back());
+			trail.pop_back();
+		}
+	}
+
+	void record()
+	{
+		crs_state s;
+		for (const auto& v : vars)
+		{
+			auto it = value.find(v.get());
+			if (it != value.end())
+				s.assignments[v] = it->second;
+		}
+		solutions.insert(std::move(s));
+	}
+
+	void search()
+	{
+		if (first_only && !solutions.empty())
+			return;
+
+		node_t pick = nullptr;
+		for (const auto& v : vars)
+			if (!value_of(v.get()))
+			{
+				pick = v.get();
+				break;
+			}
+
+		if (!pick) // every decision leaf is assigned -> complete solution
+		{
+			record();
+			return;
+		}
+
+		for (int bv = 0; bv < 2; ++bv)
+		{
+			const size_t mark = trail.size();
+			if (assign(pick, bv != 0))
+				search();
+			undo_to(mark);
+
+			if (first_only && !solutions.empty())
+				return;
+		}
+	}
+
+	solutions_t run()
+	{
+		build();
+		if (!assign(root_ptr.get(), target)) // seed the requirement root == target
+			return solutions; // unsatisfiable
+		search();
+		return solutions;
+	}
+};
+
+inline solutions_t resolve(bit_tracker& bit, bool state, bool first_only = false)
+{
+	engine e(bit.bit_state, state, first_only);
+	return e.run();
+}
+
+} // namespace dpll
+
 }
 
 // Update the assert_equality functions to call the resolver
 collision_resolution::solutions_t
-	assert_equality(ref_handler<bit_tracker> lhs, ref_handler<bit_tracker> rhs)
+	assert_equality(ref_handler<bit_tracker> lhs, ref_handler<bit_tracker> rhs, bool first_only = false)
 {
 	auto is_not_equal = (lhs.ref ^ rhs.ref);
 	//details::print_bs(*is_not_equal.bit_state);
 
-	auto solutions = collision_resolution::resolve_bit_collisions(is_not_equal, false);
+	auto solutions = collision_resolution::dpll::resolve(is_not_equal, false, first_only);
 	if (solutions.empty())
 		throw std::runtime_error("Unsatisfiable constraints");
 
@@ -1110,15 +1356,15 @@ collision_resolution::solutions_t
 
 template <size_t N>
 collision_resolution::solutions_t
-	assert_equality(ref_handler<int_tracker<N>> lhs, ref_handler<int_tracker<N>> rhs)
+	assert_equality(ref_handler<int_tracker<N>> lhs, ref_handler<int_tracker<N>> rhs, bool first_only = false)
 {
 	bit_tracker result = 0;
 	bit_tracker _false(false);
-	
+
 	for (size_t index = 0; index < N; ++index)
 		result |= (lhs.ref.bits[index] ^ rhs.ref.bits[index]);
 
-	return assert_equality(result, _false);
+	return assert_equality(result, _false, first_only);
 }
 
 void assign_assert_result(ref_handler<bit_tracker, false> value, const std::map<const counted_ptr<details::bitstate>, bool>& assignments)

@@ -158,7 +158,7 @@ private:
 template<typename T, class... Args>
 constexpr counted_ptr<T> make_counted(Args&&... args)
 {
-	return counted_ptr<T>::make_counted_(std::forward<Args>(args)...);
+	return counted_ptr<T>::make_counted(std::forward<Args>(args)...);
 }
 
 } // namespace dixelu
