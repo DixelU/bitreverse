@@ -49,7 +49,7 @@ void real_crc32_reversal()
 	const dixelu::bitreverse::v2::bit_tracker _true(true);
 
 	std::cout << "Real CRC32 reversal test" << std::endl;
-	auto reversal_result = dixelu::bitreverse::v2::solver::assert_equality(is_false, _true);
+	auto reversal_result = dixelu::bitreverse::v2::solver::assert_equality(is_false, _true, true);
 
 	size_t counter = 0;
 	std::cout << "Size: " << reversal_result.size() << std::endl;

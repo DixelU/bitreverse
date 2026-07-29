@@ -5,6 +5,7 @@
 #include <deque>
 #include <array>
 #include <bit>
+#include <functional>
 #include <unordered_map>
 #include <string>
 #include <vector>
@@ -1183,11 +1184,16 @@ struct engine
 {
 	using node_t = const details::bitstate*;
 	using node_id = size_t;
+	using solution_callback = std::function<bool(const crs_state&)>;
 	static constexpr node_id no_node = static_cast<node_id>(-1);
 
 	counted_ptr<details::bitstate> root_ptr;
 	bool target;
 	bool first_only;
+	bool collect_solutions;
+	solution_callback on_solution;
+	bool stop_requested{false};
+	size_t solution_count{0};
 
 	node_id root_id{no_node};
 	std::vector<counted_ptr<details::bitstate>> nodes;
@@ -1213,8 +1219,17 @@ struct engine
 
 	solutions_t solutions;
 
-	engine(counted_ptr<details::bitstate> root, bool tgt, bool first) :
-		root_ptr(std::move(root)), target(tgt), first_only(first) {}
+	engine(
+		counted_ptr<details::bitstate> root,
+		bool tgt,
+		bool first,
+		bool collect = true,
+		solution_callback callback = {}) :
+		root_ptr(std::move(root)),
+		target(tgt),
+		first_only(first),
+		collect_solutions(collect),
+		on_solution(std::move(callback)) {}
 
 	int8_t value_of(node_id id) const
 	{
@@ -1627,7 +1642,13 @@ struct engine
 			if (value != -1)
 				s.assignments[nodes[variable]] = value != 0;
 		}
-		solutions.insert(std::move(s));
+
+		++solution_count;
+		if (on_solution && !on_solution(s))
+			stop_requested = true;
+
+		if (collect_solutions)
+			solutions.insert(std::move(s));
 	}
 
 	bool preferred_phase(node_id variable) const
@@ -1659,7 +1680,7 @@ struct engine
 
 	void search()
 	{
-		if (first_only && !solutions.empty())
+		if (stop_requested || (first_only && solution_count != 0))
 			return;
 
 		node_id pick = no_node;
@@ -1684,7 +1705,7 @@ struct engine
 				search();
 			undo_to(mark);
 
-			if (first_only && !solutions.empty())
+			if (stop_requested || (first_only && solution_count != 0))
 				return;
 		}
 	}
@@ -1705,6 +1726,21 @@ inline solutions_t resolve(bit_tracker& bit, bool state, bool first_only = false
 	return e.run();
 }
 
+inline size_t resolve_stream(
+	bit_tracker& bit,
+	bool state,
+	engine::solution_callback on_solution)
+{
+	engine e(
+		bit.bit_state,
+		state,
+		false,
+		false,
+		std::move(on_solution));
+	(void)e.run();
+	return e.solution_count;
+}
+
 } // namespace dpll
 
 }
@@ -1723,6 +1759,49 @@ collision_resolution::solutions_t
 	return solutions;
 }
 
+// Stream complete assignments as they are found without retaining them.
+// A void callback continues enumeration. Any other return type is converted
+// to bool, where false requests an orderly early stop.
+template <typename Callback>
+requires std::is_invocable_v<
+	std::decay_t<Callback>&,
+	const collision_resolution::crs_state&>
+size_t assert_equality(
+	ref_handler<bit_tracker> lhs,
+	ref_handler<bit_tracker> rhs,
+	Callback&& callback)
+{
+	using callback_t = std::decay_t<Callback>;
+	using callback_result_t = std::invoke_result_t<
+		callback_t&,
+		const collision_resolution::crs_state&>;
+
+	auto adapter =
+		[handler = callback_t(std::forward<Callback>(callback))]
+		(const collision_resolution::crs_state& solution) mutable -> bool
+		{
+			if constexpr (std::is_void_v<callback_result_t>)
+			{
+				std::invoke(handler, solution);
+				return true;
+			}
+			else
+				return static_cast<bool>(
+					std::invoke(handler, solution));
+		};
+
+	auto is_not_equal = (lhs.ref ^ rhs.ref);
+	const size_t solution_count =
+		collision_resolution::dpll::resolve_stream(
+			is_not_equal,
+			false,
+			std::move(adapter));
+	if (solution_count == 0)
+		throw std::runtime_error("Unsatisfiable constraints");
+
+	return solution_count;
+}
+
 template <size_t N>
 collision_resolution::solutions_t
 	assert_equality(ref_handler<int_tracker<N>> lhs, ref_handler<int_tracker<N>> rhs, bool first_only = false)
@@ -1734,6 +1813,27 @@ collision_resolution::solutions_t
 		result |= (lhs.ref.bits[index] ^ rhs.ref.bits[index]);
 
 	return assert_equality(result, _false, first_only);
+}
+
+template <size_t N, typename Callback>
+requires std::is_invocable_v<
+	std::decay_t<Callback>&,
+	const collision_resolution::crs_state&>
+size_t assert_equality(
+	ref_handler<int_tracker<N>> lhs,
+	ref_handler<int_tracker<N>> rhs,
+	Callback&& callback)
+{
+	bit_tracker result = 0;
+	bit_tracker _false(false);
+
+	for (size_t index = 0; index < N; ++index)
+		result |= (lhs.ref.bits[index] ^ rhs.ref.bits[index]);
+
+	return assert_equality(
+		result,
+		_false,
+		std::forward<Callback>(callback));
 }
 
 void assign_assert_result(ref_handler<bit_tracker, false> value, const std::map<const counted_ptr<details::bitstate>, bool>& assignments)

@@ -73,6 +73,36 @@ void solver_regression_tests()
 	const auto first = br::assert_equality(expression, expected, true);
 	require(first.size() == 1, "first-only solving must return one assignment");
 
+	std::set<unsigned> streamed_assignments;
+	const size_t streamed_count = br::assert_equality(
+		expression,
+		expected,
+		[&](const br::collision_resolution::crs_state& solution)
+		{
+			const unsigned assignment =
+				static_cast<unsigned>(solution.assignments.at(x.bit_state)) |
+				(static_cast<unsigned>(
+					solution.assignments.at(y.bit_state)) << 1) |
+				(static_cast<unsigned>(
+					solution.assignments.at(z.bit_state)) << 2);
+			streamed_assignments.insert(assignment);
+		});
+	require(
+		streamed_count == 5 && streamed_assignments.size() == 5,
+		"streaming must emit every complete assignment exactly once");
+
+	size_t early_stop_callbacks = 0;
+	const size_t early_stop_count = br::assert_equality(
+		expression,
+		expected,
+		[&](const br::collision_resolution::crs_state&)
+		{
+			return ++early_stop_callbacks < 2;
+		});
+	require(
+		early_stop_count == 2 && early_stop_callbacks == 2,
+		"a false callback result must stop streaming immediately");
+
 	bool unsatisfiable = false;
 	try
 	{
@@ -195,16 +225,23 @@ void crc_hybrid_solver_regression_test()
 			br::unknown, br::unknown, br::unknown};
 	const auto symbolic_crc = tracked_crc32(unknown_message);
 
-	const auto solutions =
-		br::assert_equality<32>(symbolic_crc, expected_crc, true);
+	br::collision_resolution::crs_state first_solution;
+	const size_t solution_count = br::assert_equality<32>(
+		symbolic_crc,
+		expected_crc,
+		[&](const br::collision_resolution::crs_state& solution)
+		{
+			first_solution = solution;
+			return false;
+		});
 	require(
-		solutions.size() == 1,
-		"seven-byte CRC reversal must find one solution");
+		solution_count == 1,
+		"seven-byte CRC stream must find one solution before stopping");
 
 	for (auto& byte : unknown_message)
 		br::assign_assert_result<8>(
 			byte,
-			solutions.begin()->assignments);
+			first_solution.assignments);
 
 	const auto actual_crc = tracked_crc32(unknown_message);
 	require(

@@ -70,41 +70,52 @@ void real_crc32_reversal()
 {
 	using dixelu::bitreverse::unknown;
 
-	std::vector<dixelu::bitreverse::itu8> hashed_string = { unknown, unknown, unknown, unknown, unknown, unknown, unknown };
-	std::array<dixelu::bitreverse::bit_tracker, 32> target_hash
-	{ 0,0,0,0,0,1,0,0,1,1,0,0,1,1,1,1,1,1,1,0,1,1,0,1,0,0,0,0,0,0,0,1 };
-	dixelu::bitreverse::int_tracker<32> result(std::move(target_hash));
+	const std::vector<dixelu::bitreverse::itu8> real_string = { 'c', 'r', 'c', '3', '1' };
+	const dixelu::bitreverse::int_tracker<32> reversal_target = crc32(real_string);
+
+	std::vector<dixelu::bitreverse::itu8> hashed_string = { unknown, unknown, unknown, unknown, unknown };
+	const auto crc32_result = crc32(hashed_string);
 
 	dixelu::bitreverse::bit_tracker hashed_string_is_not_ascii;
 	for (auto& itu8 : hashed_string)
 	{
 		hashed_string_is_not_ascii |= dixelu::bitreverse::bit_tracker(itu8 & 0x80); // is beyond ascii
 		hashed_string_is_not_ascii |=
-			dixelu::bitreverse::bit_tracker((itu8 - 31) & 0x80) &  // is control symbol
+			~dixelu::bitreverse::bit_tracker(itu8 >> 5) &  // is control symbol
 			dixelu::bitreverse::bit_tracker(itu8); // and not zero
 	}
 
-	auto crc32_result = crc32(hashed_string);
-	auto crc32_result_differs = dixelu::bitreverse::bit_tracker(crc32_result ^ result);
-	auto is_false = crc32_result_differs; //| hashed_string_is_not_ascii;
+	const auto crc32_result_differs = dixelu::bitreverse::bit_tracker(crc32_result ^ reversal_target);
+	auto is_false = crc32_result_differs | hashed_string_is_not_ascii;
 	dixelu::bitreverse::bit_tracker _false(false);
 
 	std::cout << "Real CRC32 reversal test" << std::endl;
-	auto reversal_result = dixelu::bitreverse::assert_equality(is_false, _false);
-
 	size_t counter = 0;
-	std::cout << "Size: " << reversal_result.size() << std::endl;
-	for (auto& solution : reversal_result)
-	{
-		++counter;
-		std::cout << "=== SOLUTION " << counter << " ===" << std::endl;
-		for (auto single_char : hashed_string)
+	const size_t solution_count = dixelu::bitreverse::assert_equality(
+		is_false,
+		_false,
+		[&](const dixelu::bitreverse::collision_resolution::crs_state& solution)
 		{
-			dixelu::bitreverse::assign_assert_result<8>(single_char, solution.assignments);
-			std::cout << single_char.__to_string();
-		}
-		std::cout << std::endl;
-	}
+			++counter;
+			std::cout << "=== SOLUTION " << counter << " ===" << std::endl;
+
+			for (auto single_char : hashed_string)
+			{
+				dixelu::bitreverse::assign_assert_result<8>(
+					single_char,
+					solution.assignments);
+				auto string = single_char.__to_string();
+				auto value = std::stoi(string, 0, 2);
+				std::cout << std::format(
+					"{} ({}) ~ 0b{}\n",
+					static_cast<char>(value),
+					(unsigned)value,
+					string) << std::flush;
+			}
+			std::cout << std::endl;
+		});
+
+	std::cout << "Size: " << solution_count << std::endl;
 }
 
 int main()
@@ -118,7 +129,7 @@ int main()
 	// std::cout << "z: " << z.__to_string() << std::endl;
 	// std::cout << "S: " << (x + y + z).__to_string() << std::endl;
 
-	bitwise_reversal_test();
+	// bitwise_reversal_test();
 
 	real_crc32_reversal();
 
