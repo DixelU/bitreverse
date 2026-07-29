@@ -807,7 +807,10 @@ namespace solver
  * Find all satisfying assignments for the constraint (lhs == rhs)
  * by encoding the expression tree to CNF and using SAT solver.
  */
-inline expr::solutions_t assert_equality(const bit_tracker& lhs, const bit_tracker& rhs)
+inline expr::solutions_t assert_equality(
+	const bit_tracker& lhs,
+	const bit_tracker& rhs,
+	bool first_only = false)
 {
 	// Create XOR of lhs and rhs - we want this to be false (they should be equal)
 	auto diff = lhs ^ rhs;
@@ -840,6 +843,8 @@ inline expr::solutions_t assert_equality(const bit_tracker& lhs, const bit_track
 		}
 
 		solutions.insert(sol);
+		if (first_only)
+			break;
 
 		// Add blocking clause to find next solution
 		sat::clause_t blocking_clause;
@@ -862,13 +867,16 @@ inline expr::solutions_t assert_equality(const bit_tracker& lhs, const bit_track
 }
 
 template <size_t N>
-expr::solutions_t assert_equality(const int_tracker<N>& lhs, const int_tracker<N>& rhs)
+expr::solutions_t assert_equality(
+	const int_tracker<N>& lhs,
+	const int_tracker<N>& rhs,
+	bool first_only = false)
 {
 	bit_tracker result(false);
 	for (size_t i = 0; i < N; ++i)
 		result = result | (lhs.bits[i] ^ rhs.bits[i]);
 
-	return assert_equality(result, bit_tracker(false));
+	return assert_equality(result, bit_tracker(false), first_only);
 }
 
 /**

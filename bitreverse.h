@@ -19,6 +19,8 @@
 #include <type_traits>
 
 #include "counted_ptr.h"
+#include "solver/options.h"
+#include "solver/statistics.h"
 
 namespace dixelu
 {
@@ -1177,571 +1179,31 @@ using solutions_t = std::set<crs_state>;
 // leaves that drive the root to `target` (a don't-care leaf is enumerated in
 // both states). Pass first_only=true to stop at the first solution.
 // ---------------------------------------------------------------------------
+namespace solver_core
+{
+
+#include "solver/compiled_circuit.h"
+#include "solver/solver_state.h"
+#include "solver/propagation/gates.h"
+#include "solver/propagation/affine.h"
+
+} // namespace solver_core
+
 namespace dpll
 {
 
-struct engine
-{
-	using node_t = const details::bitstate*;
-	using node_id = size_t;
-	using solution_callback = std::function<bool(const crs_state&)>;
-	static constexpr node_id no_node = static_cast<node_id>(-1);
-
-	counted_ptr<details::bitstate> root_ptr;
-	bool target;
-	bool first_only;
-	bool collect_solutions;
-	solution_callback on_solution;
-	bool stop_requested{false};
-	size_t solution_count{0};
-
-	node_id root_id{no_node};
-	std::vector<counted_ptr<details::bitstate>> nodes;
-	std::unordered_map<node_t, node_id> node_ids; // build-time lookup only
-	std::vector<std::array<node_id, 2>> inputs;
-	std::vector<std::vector<node_id>> parents;
-	std::vector<node_id> vars;                // '*' decision leaves
-	std::vector<int8_t> values;               // -1 unassigned, 0 false, 1 true
-	std::vector<node_id> trail;                // undo log
-	std::vector<node_id> propagation_queue;    // reused for every decision
-
-	// Hybrid affine reasoning. UNKNOWN/AND/OR outputs are Boolean atoms;
-	// XOR and NOT regions are represented as affine forms over those atoms.
-	static constexpr size_t max_affine_atoms = 4096;
-	bool affine_enabled{false};
-	size_t affine_atom_count{0};
-	size_t affine_word_count{0};
-	std::vector<node_id> atom_nodes;
-	std::vector<node_id> node_atom_columns;
-	std::vector<std::uint64_t> affine_coefficients;
-	std::vector<std::uint8_t> affine_constants;
-	std::vector<std::uint8_t> affine_ready;
-
-	solutions_t solutions;
-
-	engine(
-		counted_ptr<details::bitstate> root,
-		bool tgt,
-		bool first,
-		bool collect = true,
-		solution_callback callback = {}) :
-		root_ptr(std::move(root)),
-		target(tgt),
-		first_only(first),
-		collect_solutions(collect),
-		on_solution(std::move(callback)) {}
-
-	int8_t value_of(node_id id) const
-	{
-		if (id == no_node)
-			return -1;
-
-		const auto& node = nodes[id];
-		if (node->operation == '=')
-			return static_cast<int8_t>(node->state);
-		return values[id];
-	}
-
-	node_id add_node(const counted_ptr<details::bitstate>& node)
-	{
-		if (!node)
-			return no_node;
-
-		const node_t raw = node.get();
-		const auto existing = node_ids.find(raw);
-		if (existing != node_ids.end())
-			return existing->second;
-
-		const node_id id = nodes.size();
-		node_ids.emplace(raw, id);
-		nodes.push_back(node);
-		inputs.push_back({no_node, no_node});
-		parents.emplace_back();
-		values.push_back(-1);
-		return id;
-	}
-
-	void build()
-	{
-		root_id = add_node(root_ptr);
-		for (node_id id = 0; id < nodes.size(); ++id)
-		{
-			const auto& current = nodes[id];
-			const std::uint8_t op = current->operation;
-			if (op == '*')
-				vars.push_back(id);
-
-			const std::uint8_t argc = details::operation_args_count[op];
-			const counted_ptr<details::bitstate>* children[2] =
-				{&current->_1, &current->_2};
-			for (std::uint8_t i = 0; i < argc; ++i)
-			{
-				const node_id child = add_node(*children[i]);
-				inputs[id][i] = child;
-				if (child != no_node)
-					parents[child].push_back(id);
-			}
-		}
-
-		// A high-fanout input participates in more constraints and is more
-		// likely to expose a contradiction early.
-		std::stable_sort(
-			vars.begin(),
-			vars.end(),
-			[&](node_id lhs, node_id rhs)
-			{
-				return parents[lhs].size() > parents[rhs].size();
-			});
-
-		propagation_queue.reserve(nodes.size());
-		trail.reserve(nodes.size());
-		initialize_affine_reasoning();
-	}
-
-	std::uint64_t* affine_words(node_id id)
-	{
-		return affine_coefficients.data() + id * affine_word_count;
-	}
-
-	const std::uint64_t* affine_words(node_id id) const
-	{
-		return affine_coefficients.data() + id * affine_word_count;
-	}
-
-	void build_affine_form(node_id id)
-	{
-		if (affine_ready[id] == 1)
-			return;
-		if (affine_ready[id] == 2)
-			throw std::logic_error("Cyclic bit expression");
-
-		affine_ready[id] = 2;
-		std::uint64_t* destination = affine_words(id);
-		const std::uint8_t op = nodes[id]->operation;
-
-		if (node_atom_columns[id] != no_node)
-		{
-			const node_id column = node_atom_columns[id];
-			destination[column / 64] |=
-				std::uint64_t{1} << (column % 64);
-		}
-		else if (op == '=')
-			affine_constants[id] = nodes[id]->state;
-		else if (op == '!')
-		{
-			const node_id lhs = inputs[id][0];
-			build_affine_form(lhs);
-			std::copy_n(
-				affine_words(lhs),
-				affine_word_count,
-				destination);
-			affine_constants[id] = !affine_constants[lhs];
-		}
-		else if (op == '^')
-		{
-			const node_id lhs = inputs[id][0];
-			const node_id rhs = inputs[id][1];
-			build_affine_form(lhs);
-			build_affine_form(rhs);
-
-			const std::uint64_t* lhs_words = affine_words(lhs);
-			const std::uint64_t* rhs_words = affine_words(rhs);
-			for (size_t word = 0; word < affine_word_count; ++word)
-				destination[word] = lhs_words[word] ^ rhs_words[word];
-			affine_constants[id] =
-				affine_constants[lhs] ^ affine_constants[rhs];
-		}
-		else
-			throw std::logic_error("Unsupported affine expression");
-
-		affine_ready[id] = 1;
-	}
-
-	void initialize_affine_reasoning()
-	{
-		size_t affine_gate_count = 0;
-		node_atom_columns.assign(nodes.size(), no_node);
-
-		for (node_id id = 0; id < nodes.size(); ++id)
-		{
-			const std::uint8_t op = nodes[id]->operation;
-			if (op == '^' || op == '!')
-				++affine_gate_count;
-
-			if (op == '*' || op == '&' || op == '|')
-			{
-				node_atom_columns[id] = atom_nodes.size();
-				atom_nodes.push_back(id);
-			}
-		}
-
-		affine_atom_count = atom_nodes.size();
-		if (affine_gate_count == 0 ||
-			affine_atom_count == 0 ||
-			affine_atom_count > max_affine_atoms)
-			return;
-
-		affine_word_count = (affine_atom_count + 63) / 64;
-		affine_coefficients.assign(
-			nodes.size() * affine_word_count,
-			std::uint64_t{0});
-		affine_constants.assign(nodes.size(), 0);
-		affine_ready.assign(nodes.size(), 0);
-
-		for (node_id id = 0; id < nodes.size(); ++id)
-			build_affine_form(id);
-
-		affine_enabled = true;
-	}
-
-	struct affine_row
-	{
-		std::vector<std::uint64_t> coefficients;
-		bool rhs{false};
-	};
-
-	bool propagate_affine()
-	{
-		if (!affine_enabled)
-			return true;
-
-		std::vector<affine_row> rows;
-		rows.reserve(trail.size());
-
-		for (const node_id id : trail)
-		{
-			affine_row row;
-			row.coefficients.assign(
-				affine_words(id),
-				affine_words(id) + affine_word_count);
-			row.rhs =
-				static_cast<bool>(values[id]) ^
-				static_cast<bool>(affine_constants[id]);
-			rows.push_back(std::move(row));
-		}
-
-		size_t rank = 0;
-		for (size_t column = 0;
-			column < affine_atom_count && rank < rows.size();
-			++column)
-		{
-			const size_t word = column / 64;
-			const std::uint64_t bit =
-				std::uint64_t{1} << (column % 64);
-
-			size_t pivot = rank;
-			while (pivot < rows.size() &&
-				!(rows[pivot].coefficients[word] & bit))
-				++pivot;
-			if (pivot == rows.size())
-				continue;
-
-			std::swap(rows[rank], rows[pivot]);
-			for (size_t row_index = 0; row_index < rows.size(); ++row_index)
-			{
-				if (row_index == rank ||
-					!(rows[row_index].coefficients[word] & bit))
-					continue;
-
-				for (size_t current_word = 0;
-					current_word < affine_word_count;
-					++current_word)
-					rows[row_index].coefficients[current_word] ^=
-						rows[rank].coefficients[current_word];
-				rows[row_index].rhs =
-					rows[row_index].rhs != rows[rank].rhs;
-			}
-			++rank;
-		}
-
-		for (const auto& row : rows)
-		{
-			size_t set_bits = 0;
-			size_t only_column = 0;
-			for (size_t word = 0; word < affine_word_count; ++word)
-			{
-				const size_t word_bits =
-					std::popcount(row.coefficients[word]);
-				if (word_bits != 0)
-				{
-					set_bits += word_bits;
-					if (set_bits == 1)
-						only_column =
-							word * 64 +
-							std::countr_zero(row.coefficients[word]);
-				}
-			}
-
-			if (set_bits == 0)
-			{
-				if (row.rhs)
-					return false;
-				continue;
-			}
-
-			if (set_bits == 1 &&
-				!set_value(atom_nodes[only_column], row.rhs))
-				return false;
-		}
-
-		return true;
-	}
-
-	bool set_value(node_id id, bool value)
-	{
-		const int8_t current = value_of(id);
-		if (current != -1)
-			return current == static_cast<int8_t>(value);
-
-		values[id] = static_cast<int8_t>(value);
-		trail.push_back(id);
-		propagation_queue.push_back(id);
-		return true;
-	}
-
-	// Enforce the local relation of gate g over {g, inputs}. Each supported
-	// operation has direct implication rules, avoiding repeated truth-table
-	// enumeration in this hot path.
-	bool imply(node_id gate)
-	{
-		const std::uint8_t op = nodes[gate]->operation;
-		if (op == '=' || op == '*')
-			return true;
-
-		const node_id lhs_id = inputs[gate][0];
-		const node_id rhs_id = inputs[gate][1];
-		int8_t output = value_of(gate);
-		int8_t lhs = value_of(lhs_id);
-		int8_t rhs = value_of(rhs_id);
-
-		if (op == '!')
-		{
-			if (output != -1 && lhs != -1)
-				return output == static_cast<int8_t>(!lhs);
-			if (output != -1)
-				return set_value(lhs_id, !output);
-			if (lhs != -1)
-				return set_value(gate, !lhs);
-			return true;
-		}
-
-		if (op == '^')
-		{
-			if (lhs != -1 && rhs != -1)
-				return set_value(gate, lhs != rhs);
-			if (output != -1 && lhs != -1)
-				return set_value(rhs_id, output != lhs);
-			if (output != -1 && rhs != -1)
-				return set_value(lhs_id, output != rhs);
-			return true;
-		}
-
-		if (op == '&')
-		{
-			if (lhs == 0 || rhs == 0)
-			{
-				if (!set_value(gate, false))
-					return false;
-			}
-			else if (lhs == 1 && rhs == 1)
-			{
-				if (!set_value(gate, true))
-					return false;
-			}
-
-			output = value_of(gate);
-			lhs = value_of(lhs_id);
-			rhs = value_of(rhs_id);
-
-			if (output == 1)
-				return set_value(lhs_id, true) && set_value(rhs_id, true);
-			if (output == 0 && lhs == 1)
-				return set_value(rhs_id, false);
-			if (output == 0 && rhs == 1)
-				return set_value(lhs_id, false);
-			return true;
-		}
-
-		if (op == '|')
-		{
-			if (lhs == 1 || rhs == 1)
-			{
-				if (!set_value(gate, true))
-					return false;
-			}
-			else if (lhs == 0 && rhs == 0)
-			{
-				if (!set_value(gate, false))
-					return false;
-			}
-
-			output = value_of(gate);
-			lhs = value_of(lhs_id);
-			rhs = value_of(rhs_id);
-
-			if (output == 0)
-				return set_value(lhs_id, false) && set_value(rhs_id, false);
-			if (output == 1 && lhs == 0)
-				return set_value(rhs_id, true);
-			if (output == 1 && rhs == 0)
-				return set_value(lhs_id, true);
-			return true;
-		}
-
-		throw std::logic_error("Unknown gate operation");
-	}
-
-	bool propagate()
-	{
-		size_t cursor = 0;
-		while (true)
-		{
-			while (cursor < propagation_queue.size())
-			{
-				const node_id id = propagation_queue[cursor++];
-
-				if (!imply(id)) // id as the output of its own gate
-					return false;
-
-				for (const node_id parent : parents[id])
-					if (!imply(parent)) // id as an input of a parent gate
-						return false;
-			}
-
-			const size_t previous_trail_size = trail.size();
-			if (!propagate_affine())
-				return false;
-			if (trail.size() == previous_trail_size)
-				return true;
-		}
-	}
-
-	bool assign(node_id id, bool value)
-	{
-		propagation_queue.clear();
-		if (!set_value(id, value))
-			return false;
-		return propagate();
-	}
-
-	void undo_to(size_t mark)
-	{
-		while (trail.size() > mark)
-		{
-			values[trail.back()] = -1;
-			trail.pop_back();
-		}
-	}
-
-	void record()
-	{
-		crs_state s;
-		for (const node_id variable : vars)
-		{
-			const int8_t value = value_of(variable);
-			if (value != -1)
-				s.assignments[nodes[variable]] = value != 0;
-		}
-
-		++solution_count;
-		if (on_solution && !on_solution(s))
-			stop_requested = true;
-
-		if (collect_solutions)
-			solutions.insert(std::move(s));
-	}
-
-	bool preferred_phase(node_id variable) const
-	{
-		size_t false_votes = 0;
-		size_t true_votes = 0;
-
-		for (const node_id parent : parents[variable])
-		{
-			const int8_t output = value_of(parent);
-			if (output == -1)
-				continue;
-
-			switch (nodes[parent]->operation)
-			{
-				case '&':
-					(output == 1 ? true_votes : false_votes) += 2;
-					break;
-				case '|':
-					(output == 0 ? false_votes : true_votes) += 2;
-					break;
-				default:
-					break;
-			}
-		}
-
-		return true_votes > false_votes;
-	}
-
-	void search()
-	{
-		if (stop_requested || (first_only && solution_count != 0))
-			return;
-
-		node_id pick = no_node;
-		for (const node_id variable : vars)
-			if (value_of(variable) == -1)
-			{
-				pick = variable;
-				break;
-			}
-
-		if (pick == no_node) // every decision leaf is assigned
-		{
-			record();
-			return;
-		}
-
-		const bool first_phase = preferred_phase(pick);
-		for (const bool phase : {first_phase, !first_phase})
-		{
-			const size_t mark = trail.size();
-			if (assign(pick, phase))
-				search();
-			undo_to(mark);
-
-			if (stop_requested || (first_only && solution_count != 0))
-				return;
-		}
-	}
-
-	solutions_t run()
-	{
-		build();
-		if (!assign(root_id, target)) // seed the requirement root == target
-			return solutions; // unsatisfiable
-		search();
-		return solutions;
-	}
-};
-
-inline solutions_t resolve(bit_tracker& bit, bool state, bool first_only = false)
-{
-	engine e(bit.bit_state, state, first_only);
-	return e.run();
-}
-
-inline size_t resolve_stream(
-	bit_tracker& bit,
-	bool state,
-	engine::solution_callback on_solution)
-{
-	engine e(
-		bit.bit_state,
-		state,
-		false,
-		false,
-		std::move(on_solution));
-	(void)e.run();
-	return e.solution_count;
-}
+using solver_core::affine_propagator;
+using solver_core::compiled_circuit;
+using solver_core::gate_propagator;
+using solver_core::no_node;
+using solver_core::node_id;
+using solver_core::solver_state;
+
+#include "solver/search/dpll.h"
 
 } // namespace dpll
+
+#include "solver/solve.h"
 
 }
 
@@ -1752,7 +1214,31 @@ collision_resolution::solutions_t
 	auto is_not_equal = (lhs.ref ^ rhs.ref);
 	//details::print_bs(*is_not_equal.bit_state);
 
-	auto solutions = collision_resolution::dpll::resolve(is_not_equal, false, first_only);
+	auto solutions = collision_resolution::solve(
+		is_not_equal,
+		false,
+		first_only);
+	if (solutions.empty())
+		throw std::runtime_error("Unsatisfiable constraints");
+
+	return solutions;
+}
+
+collision_resolution::solutions_t
+	assert_equality(
+		ref_handler<bit_tracker> lhs,
+		ref_handler<bit_tracker> rhs,
+		const solver_options& options,
+		bool first_only = false,
+		solver_statistics* statistics = nullptr)
+{
+	auto is_not_equal = (lhs.ref ^ rhs.ref);
+	auto solutions = collision_resolution::solve(
+		is_not_equal,
+		false,
+		first_only,
+		options,
+		statistics);
 	if (solutions.empty())
 		throw std::runtime_error("Unsatisfiable constraints");
 
@@ -1792,10 +1278,54 @@ size_t assert_equality(
 
 	auto is_not_equal = (lhs.ref ^ rhs.ref);
 	const size_t solution_count =
-		collision_resolution::dpll::resolve_stream(
+		collision_resolution::solve_stream(
 			is_not_equal,
 			false,
 			std::move(adapter));
+	if (solution_count == 0)
+		throw std::runtime_error("Unsatisfiable constraints");
+
+	return solution_count;
+}
+
+template <typename Callback>
+requires std::is_invocable_v<
+	std::decay_t<Callback>&,
+	const collision_resolution::crs_state&>
+size_t assert_equality(
+	ref_handler<bit_tracker> lhs,
+	ref_handler<bit_tracker> rhs,
+	const solver_options& options,
+	Callback&& callback,
+	solver_statistics* statistics = nullptr)
+{
+	using callback_t = std::decay_t<Callback>;
+	using callback_result_t = std::invoke_result_t<
+		callback_t&,
+		const collision_resolution::crs_state&>;
+
+	auto adapter =
+		[handler = callback_t(std::forward<Callback>(callback))]
+		(const collision_resolution::crs_state& solution) mutable -> bool
+		{
+			if constexpr (std::is_void_v<callback_result_t>)
+			{
+				std::invoke(handler, solution);
+				return true;
+			}
+			else
+				return static_cast<bool>(
+					std::invoke(handler, solution));
+		};
+
+	auto is_not_equal = (lhs.ref ^ rhs.ref);
+	const size_t solution_count =
+		collision_resolution::solve_stream(
+			is_not_equal,
+			false,
+			std::move(adapter),
+			options,
+			statistics);
 	if (solution_count == 0)
 		throw std::runtime_error("Unsatisfiable constraints");
 
@@ -1813,6 +1343,29 @@ collision_resolution::solutions_t
 		result |= (lhs.ref.bits[index] ^ rhs.ref.bits[index]);
 
 	return assert_equality(result, _false, first_only);
+}
+
+template <size_t N>
+collision_resolution::solutions_t
+	assert_equality(
+		ref_handler<int_tracker<N>> lhs,
+		ref_handler<int_tracker<N>> rhs,
+		const solver_options& options,
+		bool first_only = false,
+		solver_statistics* statistics = nullptr)
+{
+	bit_tracker result = 0;
+	bit_tracker _false(false);
+
+	for (size_t index = 0; index < N; ++index)
+		result |= (lhs.ref.bits[index] ^ rhs.ref.bits[index]);
+
+	return assert_equality(
+		result,
+		_false,
+		options,
+		first_only,
+		statistics);
 }
 
 template <size_t N, typename Callback>
@@ -1834,6 +1387,31 @@ size_t assert_equality(
 		result,
 		_false,
 		std::forward<Callback>(callback));
+}
+
+template <size_t N, typename Callback>
+requires std::is_invocable_v<
+	std::decay_t<Callback>&,
+	const collision_resolution::crs_state&>
+size_t assert_equality(
+	ref_handler<int_tracker<N>> lhs,
+	ref_handler<int_tracker<N>> rhs,
+	const solver_options& options,
+	Callback&& callback,
+	solver_statistics* statistics = nullptr)
+{
+	bit_tracker result = 0;
+	bit_tracker _false(false);
+
+	for (size_t index = 0; index < N; ++index)
+		result |= (lhs.ref.bits[index] ^ rhs.ref.bits[index]);
+
+	return assert_equality(
+		result,
+		_false,
+		options,
+		std::forward<Callback>(callback),
+		statistics);
 }
 
 void assign_assert_result(ref_handler<bit_tracker, false> value, const std::map<const counted_ptr<details::bitstate>, bool>& assignments)

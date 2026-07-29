@@ -17,6 +17,18 @@ int main(int argc, char** argv)
 		throw std::invalid_argument(
 			"known prefix cannot be longer than the target message");
 
+	br::solver_options options;
+	for (int argument = 3; argument < argc; ++argument)
+	{
+		const std::string flag = argv[argument];
+		if (flag == "--no-affine")
+			options.affine_reasoning = false;
+		else if (flag == "--conflict-learning")
+			options.conflict_learning = true;
+		else
+			throw std::invalid_argument("unknown option: " + flag);
+	}
+
 	std::vector<br::itu8> concrete_message;
 	std::vector<br::itu8> candidate;
 	concrete_message.reserve(target_message.size());
@@ -39,15 +51,18 @@ int main(int argc, char** argv)
 	const auto construction_end = std::chrono::steady_clock::now();
 
 	br::collision_resolution::crs_state first_solution;
+	br::solver_statistics statistics;
 	const auto solving_start = std::chrono::steady_clock::now();
 	const size_t solution_count = br::assert_equality<128>(
 		symbolic,
 		target,
+		options,
 		[&](const br::collision_resolution::crs_state& solution)
 		{
 			first_solution = solution;
 			return false;
-		});
+		},
+		&statistics);
 	const auto solving_end = std::chrono::steady_clock::now();
 
 	for (auto& character : candidate)
@@ -73,5 +88,17 @@ int main(int argc, char** argv)
 		<< "Recovered: " << recovered << '\n'
 		<< "Solutions emitted: " << solution_count << '\n'
 		<< "Expression construction: " << construction_ms << " ms\n"
-		<< "Solving: " << solving_ms << " ms\n";
+		<< "Solving: " << solving_ms << " ms\n"
+		<< "Nodes: " << statistics.nodes << '\n'
+		<< "Variables: " << statistics.variables << '\n'
+		<< "Decisions: " << statistics.decisions << '\n'
+		<< "Propagations: " << statistics.propagations << '\n'
+		<< "Affine enabled: "
+		<< (statistics.affine_enabled ? "yes" : "no") << '\n'
+		<< "Affine atoms: " << statistics.affine_atoms << '\n'
+		<< "Affine passes: " << statistics.affine_passes << '\n'
+		<< "Conflicts: " << statistics.conflicts << '\n'
+		<< "Peak trail: " << statistics.peak_trail << '\n'
+		<< "Learned clauses: " << statistics.learned_clauses << '\n'
+		<< "Backjumps: " << statistics.backjumps << '\n';
 }

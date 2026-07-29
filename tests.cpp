@@ -104,6 +104,44 @@ void solver_regression_tests()
 		early_stop_count == 2 && early_stop_callbacks == 2,
 		"a false callback result must stop streaming immediately");
 
+	br::solver_options baseline_options;
+	baseline_options.affine_reasoning = false;
+	br::solver_statistics baseline_statistics;
+	const size_t baseline_count = br::assert_equality(
+		expression,
+		expected,
+		baseline_options,
+		[](const br::collision_resolution::crs_state&) {},
+		&baseline_statistics);
+	require(
+		baseline_count == 5 &&
+			baseline_statistics.solutions == 5 &&
+			baseline_statistics.variables == 3 &&
+			baseline_statistics.nodes >= 3 &&
+			baseline_statistics.decisions != 0 &&
+			baseline_statistics.propagations != 0 &&
+			baseline_statistics.affine_passes == 0,
+		"baseline options and statistics mismatch");
+
+	bool unavailable_learning_rejected = false;
+	try
+	{
+		br::solver_options unavailable_options;
+		unavailable_options.conflict_learning = true;
+		(void)br::assert_equality(
+			expression,
+			expected,
+			unavailable_options,
+			true);
+	}
+	catch (const std::logic_error&)
+	{
+		unavailable_learning_rejected = true;
+	}
+	require(
+		unavailable_learning_rejected,
+		"unimplemented conflict learning must not silently run DPLL");
+
 	bool unsatisfiable = false;
 	try
 	{
@@ -227,16 +265,25 @@ void crc_hybrid_solver_regression_test()
 	const auto symbolic_crc = tracked_crc32(unknown_message);
 
 	br::collision_resolution::crs_state first_solution;
+	br::solver_options options;
+	br::solver_statistics statistics;
 	const size_t solution_count = br::assert_equality<32>(
 		symbolic_crc,
 		expected_crc,
+		options,
 		[&](const br::collision_resolution::crs_state& solution)
 		{
 			first_solution = solution;
 			return false;
-		});
+		},
+		&statistics);
 	require(
-		solution_count == 1,
+		solution_count == 1 &&
+			statistics.solutions == 1 &&
+			statistics.variables == 56 &&
+			statistics.affine_enabled &&
+			statistics.affine_atoms != 0 &&
+			statistics.affine_passes != 0,
 		"seven-byte CRC stream must find one solution before stopping");
 
 	for (auto& byte : unknown_message)
