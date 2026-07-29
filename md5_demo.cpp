@@ -25,6 +25,10 @@ int main(int argc, char** argv)
 			options.affine_reasoning = false;
 		else if (flag == "--conflict-learning")
 			options.conflict_learning = true;
+		else if (flag.starts_with("--conflict-analysis-limit="))
+			options.max_conflict_analysis_nodes =
+				std::stoull(flag.substr(
+					std::string("--conflict-analysis-limit=").size()));
 		else
 			throw std::invalid_argument("unknown option: " + flag);
 	}
@@ -100,5 +104,7 @@ int main(int argc, char** argv)
 		<< "Conflicts: " << statistics.conflicts << '\n'
 		<< "Peak trail: " << statistics.peak_trail << '\n'
 		<< "Learned clauses: " << statistics.learned_clauses << '\n'
-		<< "Backjumps: " << statistics.backjumps << '\n';
+		<< "Backjumps: " << statistics.backjumps << '\n'
+		<< "Conflict-analysis cutoffs: "
+		<< statistics.conflict_analysis_cutoffs << '\n';
 }

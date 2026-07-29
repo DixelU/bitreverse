@@ -16,8 +16,12 @@ inline solutions_t solve(
 	solver_statistics* statistics = nullptr)
 {
 	if (options.conflict_learning)
-		throw std::logic_error(
-			"Conflict learning engine is not implemented yet");
+		return cdcl::resolve(
+			bit,
+			target,
+			first_only,
+			options,
+			statistics);
 
 	return dpll::resolve(
 		bit,
@@ -35,8 +39,12 @@ inline size_t solve_stream(
 	solver_statistics* statistics = nullptr)
 {
 	if (options.conflict_learning)
-		throw std::logic_error(
-			"Conflict learning engine is not implemented yet");
+		return cdcl::resolve_stream(
+			bit,
+			target,
+			std::move(on_solution),
+			options,
+			statistics);
 
 	return dpll::resolve_stream(
 		bit,

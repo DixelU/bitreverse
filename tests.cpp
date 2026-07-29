@@ -123,24 +123,172 @@ void solver_regression_tests()
 			baseline_statistics.affine_passes == 0,
 		"baseline options and statistics mismatch");
 
-	bool unavailable_learning_rejected = false;
+	br::solver_options learning_options;
+	learning_options.affine_reasoning = false;
+	learning_options.conflict_learning = true;
+	br::solver_statistics learning_statistics;
+	const auto learning_all = br::assert_equality(
+		expression,
+		expected,
+		learning_options,
+		false,
+		&learning_statistics);
+	require(
+		learning_all.size() == 5 &&
+			learning_statistics.solutions == 5 &&
+			learning_statistics.decisions != 0 &&
+			learning_statistics.propagations != 0,
+		"CDCL must enumerate the same five complete assignments");
+	require(
+		br::assert_equality(
+			expression,
+			expected,
+			learning_options,
+			true).size() == 1,
+		"CDCL first-only solving must stop after one model");
+
+	std::set<unsigned> learned_streamed_assignments;
+	size_t learned_callbacks = 0;
+	const size_t learned_streamed_count = br::assert_equality(
+		expression,
+		expected,
+		learning_options,
+		[&](const br::collision_resolution::crs_state& solution)
+		{
+			const unsigned assignment =
+				static_cast<unsigned>(solution.assignments.at(x.bit_state)) |
+				(static_cast<unsigned>(
+					solution.assignments.at(y.bit_state)) << 1) |
+				(static_cast<unsigned>(
+					solution.assignments.at(z.bit_state)) << 2);
+			learned_streamed_assignments.insert(assignment);
+			return ++learned_callbacks < 3;
+		});
+	require(
+		learned_streamed_count == 3 &&
+			learned_streamed_assignments.size() == 3,
+		"CDCL streaming must emit unique models and stop immediately");
+
+	br::bit_tracker conflict_x;
+	br::bit_tracker conflict_y;
+	conflict_x = br::unknown;
+	conflict_y = br::unknown;
+	const auto learned_unsatisfiable =
+		(conflict_x | conflict_y) &
+		((!conflict_x) | conflict_y) &
+		(conflict_x | (!conflict_y)) &
+		((!conflict_x) | (!conflict_y));
+	br::solver_statistics conflict_statistics;
+	bool learned_conflict_rejected = false;
 	try
 	{
-		br::solver_options unavailable_options;
-		unavailable_options.conflict_learning = true;
+		(void)br::assert_equality(
+			learned_unsatisfiable,
+			expected,
+			learning_options,
+			false,
+			&conflict_statistics);
+	}
+	catch (const std::runtime_error&)
+	{
+		learned_conflict_rejected = true;
+	}
+	require(
+		learned_conflict_rejected &&
+			conflict_statistics.conflicts != 0 &&
+			conflict_statistics.learned_clauses != 0,
+		"CDCL must learn from a non-trivial unsatisfiable formula");
+
+	br::solver_options cutoff_options = learning_options;
+	cutoff_options.max_conflict_analysis_nodes = 1;
+	br::solver_statistics cutoff_statistics;
+	bool cutoff_unsatisfiable = false;
+	try
+	{
+		(void)br::assert_equality(
+			learned_unsatisfiable,
+			expected,
+			cutoff_options,
+			false,
+			&cutoff_statistics);
+	}
+	catch (const std::runtime_error&)
+	{
+		cutoff_unsatisfiable = true;
+	}
+	require(
+		cutoff_unsatisfiable &&
+			cutoff_statistics.conflict_analysis_cutoffs != 0,
+		"bounded CDCL analysis must fall back without losing completeness");
+
+	bool unexplained_affine_rejected = false;
+	try
+	{
+		br::solver_options incompatible_options;
+		incompatible_options.conflict_learning = true;
 		(void)br::assert_equality(
 			expression,
 			expected,
-			unavailable_options,
+			incompatible_options,
 			true);
 	}
 	catch (const std::logic_error&)
 	{
-		unavailable_learning_rejected = true;
+		unexplained_affine_rejected = true;
 	}
 	require(
-		unavailable_learning_rejected,
-		"unimplemented conflict learning must not silently run DPLL");
+		unexplained_affine_rejected,
+		"CDCL must reject active affine propagation without explanations");
+
+	br::bit_tracker jump_a, jump_c, jump_d, jump_x;
+	br::bit_tracker jump_p, jump_q, jump_r, jump_s;
+	br::bit_tracker jump_t, jump_u, jump_v;
+	jump_a = br::unknown;
+	jump_c = br::unknown;
+	jump_d = br::unknown;
+	jump_x = br::unknown;
+	jump_p = br::unknown;
+	jump_q = br::unknown;
+	jump_r = br::unknown;
+	jump_s = br::unknown;
+	jump_t = br::unknown;
+	jump_u = br::unknown;
+	jump_v = br::unknown;
+
+	// Fanout orders the decisions as a, c, d. Once a=d=true, the two
+	// trap clauses imply both x and !x. The learned (!a | !d) clause can
+	// therefore skip the irrelevant c decision level.
+	const auto jump_padding_a =
+		(jump_a | jump_p) & (jump_a | jump_q);
+	const auto jump_padding_c =
+		(jump_c | jump_u) &
+		(jump_c | jump_v) &
+		(jump_c | jump_r) &
+		(jump_c | jump_t);
+	const auto jump_padding_d = jump_d | jump_s;
+	const auto jump_trap =
+		((!jump_a) | (!jump_d) | jump_x) &
+		((!jump_a) | (!jump_d) | (!jump_x));
+	const auto jump_expression =
+		jump_padding_a &
+		jump_padding_c &
+		jump_padding_d &
+		jump_trap &
+		(jump_t | jump_a);
+
+	br::solver_options jump_options = learning_options;
+	jump_options.max_conflict_analysis_nodes = 0;
+	br::solver_statistics jump_statistics;
+	require(
+		br::assert_equality(
+			jump_expression,
+			expected,
+			jump_options,
+			true,
+			&jump_statistics).size() == 1 &&
+			jump_statistics.learned_clauses != 0 &&
+			jump_statistics.backjumps != 0,
+		"first-UIP learning must skip an irrelevant decision level");
 
 	bool unsatisfiable = false;
 	try
@@ -159,7 +307,8 @@ using truth_table_t = std::set<unsigned>;
 
 truth_table_t solve_binary_truth_table(
 	char operation,
-	bool expected)
+	bool expected,
+	const br::solver_options* options = nullptr)
 {
 	br::bit_tracker x;
 	br::bit_tracker y;
@@ -176,8 +325,12 @@ truth_table_t solve_binary_truth_table(
 	}
 
 	const br::bit_tracker expected_bit(expected);
-	const auto solutions =
-		br::assert_equality(expression, expected_bit);
+	const auto solutions = options
+		? br::assert_equality(
+			expression,
+			expected_bit,
+			*options)
+		: br::assert_equality(expression, expected_bit);
 	truth_table_t result;
 	for (const auto& solution : solutions)
 	{
@@ -210,6 +363,19 @@ void exhaustive_gate_solver_tests()
 	require(
 		solve_binary_truth_table('^', true) == truth_table_t{1, 2},
 		"XOR=true truth table mismatch");
+
+	br::solver_options learning_options;
+	learning_options.affine_reasoning = false;
+	learning_options.conflict_learning = true;
+	for (const char operation : {'&', '|', '^'})
+		for (const bool expected : {false, true})
+			require(
+				solve_binary_truth_table(
+					operation,
+					expected,
+					&learning_options) ==
+				solve_binary_truth_table(operation, expected),
+				"CDCL gate truth table differs from DPLL");
 
 	br::bit_tracker x;
 	x = br::unknown;

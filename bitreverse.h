@@ -4,8 +4,11 @@
 #include <map>
 #include <deque>
 #include <array>
+#include <algorithm>
 #include <bit>
 #include <functional>
+#include <initializer_list>
+#include <limits>
 #include <unordered_map>
 #include <string>
 #include <vector>
@@ -1202,6 +1205,20 @@ using solver_core::solver_state;
 #include "solver/search/dpll.h"
 
 } // namespace dpll
+
+namespace cdcl
+{
+
+using solver_core::affine_propagator;
+using solver_core::compiled_circuit;
+using solver_core::no_node;
+using solver_core::node_id;
+
+#include "solver/propagation/clauses.h"
+#include "solver/propagation/reasoned_gates.h"
+#include "solver/search/cdcl.h"
+
+} // namespace cdcl
 
 #include "solver/solve.h"
 

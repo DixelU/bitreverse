@@ -19,6 +19,7 @@ struct solver_statistics
 	std::size_t solutions{0};
 	std::size_t learned_clauses{0};
 	std::size_t backjumps{0};
+	std::size_t conflict_analysis_cutoffs{0};
 	std::size_t peak_trail{0};
 	bool affine_enabled{false};
 	std::chrono::nanoseconds elapsed{};
