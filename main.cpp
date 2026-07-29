@@ -70,10 +70,10 @@ void real_crc32_reversal()
 {
 	using dixelu::bitreverse::unknown;
 
-	const std::vector<dixelu::bitreverse::itu8> real_string = { 'c', 'r', 'c', '3', '1' };
+	const std::vector<dixelu::bitreverse::itu8> real_string = { 'c', 'r', 'c', '3', '1', '!' };
 	const dixelu::bitreverse::int_tracker<32> reversal_target = crc32(real_string);
 
-	std::vector<dixelu::bitreverse::itu8> hashed_string = { unknown, unknown, unknown, unknown, unknown };
+	std::vector<dixelu::bitreverse::itu8> hashed_string = { unknown, unknown, unknown, unknown, unknown, unknown };
 	const auto crc32_result = crc32(hashed_string);
 
 	dixelu::bitreverse::bit_tracker hashed_string_is_not_ascii;
@@ -107,7 +107,7 @@ void real_crc32_reversal()
 				auto string = single_char.__to_string();
 				auto value = std::stoi(string, 0, 2);
 				std::cout << std::format(
-					"{} ({}) ~ 0b{}\n",
+					"{} ({:3}) ~ 0b{}\n",
 					static_cast<char>(value),
 					(unsigned)value,
 					string) << std::flush;
