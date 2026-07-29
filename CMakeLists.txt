@@ -8,6 +8,9 @@ add_executable(bitreverse main.cpp)
 target_compile_options(bitreverse PUBLIC -Wall -Wextra -Wuninitialized -pedantic -fstack-protector-all -O3 -ggdb)
 #target_link_options(bitreverse PUBLIC -fsanitize=address)
 
+add_executable(md5_reverse_demo md5_demo.cpp)
+target_compile_options(md5_reverse_demo PRIVATE -Wall -Wextra -Wuninitialized -pedantic -fstack-protector-all -O3 -ggdb)
+
 include(CTest)
 
 if(BUILD_TESTING)

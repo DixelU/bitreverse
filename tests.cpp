@@ -4,6 +4,7 @@
 #include <stdexcept>
 
 #include "bitreverse.h"
+#include "md5.h"
 
 namespace br = dixelu::bitreverse;
 
@@ -249,6 +250,85 @@ void crc_hybrid_solver_regression_test()
 		"reversed message must reproduce the target CRC");
 }
 
+template<size_t N>
+std::string tracker_hex(const br::int_tracker<N>& value)
+{
+	static constexpr char digits[] = "0123456789abcdef";
+	static_assert(N % 4 == 0);
+
+	const std::string bits = value.__to_string();
+	std::string result;
+	result.reserve(N / 4);
+	for (size_t offset = 0; offset < N; offset += 4)
+	{
+		unsigned nibble = 0;
+		for (size_t bit = 0; bit < 4; ++bit)
+		{
+			require(
+				bits[offset + bit] == '0' || bits[offset + bit] == '1',
+				"hex conversion requires a concrete tracker");
+			nibble =
+				(nibble << 1) |
+				static_cast<unsigned>(bits[offset + bit] - '0');
+		}
+		result.push_back(digits[nibble]);
+	}
+	return result;
+}
+
+std::vector<br::itu8> tracked_message(const std::string& message)
+{
+	std::vector<br::itu8> result;
+	result.reserve(message.size());
+	for (const unsigned char character : message)
+		result.emplace_back(character);
+	return result;
+}
+
+void md5_forward_regression_tests()
+{
+	require(
+		tracker_hex(br::hash::md5(tracked_message(""))) ==
+			"d41d8cd98f00b204e9800998ecf8427e",
+		"MD5 empty-string vector mismatch");
+	require(
+		tracker_hex(br::hash::md5(tracked_message("a"))) ==
+			"0cc175b9c0f1b6a831c399e269772661",
+		"MD5 one-byte vector mismatch");
+	require(
+		tracker_hex(br::hash::md5(tracked_message("abc"))) ==
+			"900150983cd24fb0d6963f7d28e17f72",
+		"MD5 three-byte vector mismatch");
+}
+
+void md5_one_unknown_byte_reversal_test()
+{
+	const auto target = br::hash::md5(tracked_message("md5!"));
+
+	std::vector<br::itu8> candidate = {'m', 'd', '5', br::unknown};
+	const auto symbolic = br::hash::md5(candidate);
+
+	br::collision_resolution::crs_state first_solution;
+	const size_t solution_count = br::assert_equality<128>(
+		symbolic,
+		target,
+		[&](const br::collision_resolution::crs_state& solution)
+		{
+			first_solution = solution;
+			return false;
+		});
+	require(
+		solution_count == 1,
+		"one-byte MD5 reversal must find a solution");
+
+	br::assign_assert_result<8>(
+		candidate.back(),
+		first_solution.assignments);
+	require(
+		tracker_hex(br::hash::md5(candidate)) == tracker_hex(target),
+		"reversed MD5 candidate must reproduce the target");
+}
+
 }
 
 int main()
@@ -257,5 +337,7 @@ int main()
 	solver_regression_tests();
 	exhaustive_gate_solver_tests();
 	crc_hybrid_solver_regression_test();
+	md5_forward_regression_tests();
+	md5_one_unknown_byte_reversal_test();
 	std::cout << "All bitreverse tests passed\n";
 }
