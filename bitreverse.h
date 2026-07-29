@@ -4,6 +4,7 @@
 #include <map>
 #include <deque>
 #include <array>
+#include <bit>
 #include <unordered_map>
 #include <string>
 #include <vector>
@@ -66,6 +67,46 @@ constexpr counted_ptr<bitstate> make_bitstate_operation(
 	const counted_ptr<bitstate>& val1 = {},
 	const counted_ptr<bitstate>& val2 = {});
 
+constexpr bool is_same_node(
+	const counted_ptr<bitstate>& lhs,
+	const counted_ptr<bitstate>& rhs)
+{
+	return lhs == rhs;
+}
+
+constexpr bool is_negation_of(
+	const counted_ptr<bitstate>& expression,
+	const counted_ptr<bitstate>& candidate)
+{
+	return expression &&
+		expression->operation == '!' &&
+		is_same_node(expression->_1, candidate);
+}
+
+constexpr bool are_complements(
+	const counted_ptr<bitstate>& lhs,
+	const counted_ptr<bitstate>& rhs)
+{
+	return is_negation_of(lhs, rhs) || is_negation_of(rhs, lhs);
+}
+
+constexpr bool contains_operand(
+	const counted_ptr<bitstate>& expression,
+	std::uint8_t operation,
+	const counted_ptr<bitstate>& operand)
+{
+	return expression &&
+		expression->operation == operation &&
+		(is_same_node(expression->_1, operand) ||
+			is_same_node(expression->_2, operand));
+}
+
+constexpr counted_ptr<bitstate> make_boolean_constant(bool value)
+{
+	return make_bitstate_operation(
+		static_cast<std::uint8_t>('=' | (static_cast<std::uint8_t>(value) << 7)));
+}
+
 constexpr bool __call_optimisers(
 	std::uint8_t current_operation,
 	const counted_ptr<bitstate>& val1,
@@ -76,7 +117,7 @@ constexpr bool __call_optimisers(
 	{
 		case '|':
 		{
-			/* optimize constant expressions */
+			// Constant, idempotence, complement, and absorption identities.
 			if (val1->operation == '=' && val1->state == true)
 				return new_state = val1, true;
 			if (val1->operation == '=' && val1->state == false)
@@ -85,12 +126,20 @@ constexpr bool __call_optimisers(
 				return new_state = val2, true;
 			if (val2->operation == '=' && val2->state == false)
 				return new_state = val1, true;
+			if (is_same_node(val1, val2))
+				return new_state = val1, true;
+			if (are_complements(val1, val2))
+				return new_state = make_boolean_constant(true), true;
+			if (contains_operand(val2, '&', val1))
+				return new_state = val1, true;
+			if (contains_operand(val1, '&', val2))
+				return new_state = val2, true;
 
 			break;
 		}
 		case '&':
 		{
-			/* optimize constant expressions */
+			// Constant, idempotence, complement, and absorption identities.
 			if (val1->operation == '=' && val1->state == false)
 				return new_state = val1, true;
 			if (val1->operation == '=' && val1->state == true)
@@ -99,12 +148,20 @@ constexpr bool __call_optimisers(
 				return new_state = val2, true;
 			if (val2->operation == '=' && val2->state == true)
 				return new_state = val1, true;
+			if (is_same_node(val1, val2))
+				return new_state = val1, true;
+			if (are_complements(val1, val2))
+				return new_state = make_boolean_constant(false), true;
+			if (contains_operand(val2, '|', val1))
+				return new_state = val1, true;
+			if (contains_operand(val1, '|', val2))
+				return new_state = val2, true;
 
 			break;
 		}
 		case '^':
 		{
-			/* optimize constant expressions */
+			// Constant, cancellation, and complement identities.
 			if (val1->operation == '=' && val1->state == false)
 				return new_state = val2, true;
 			if (val1->operation == '=' && val1->state == true)
@@ -115,9 +172,18 @@ constexpr bool __call_optimisers(
 			if (val2->operation == '=' && val2->state == true)
 				return new_state = make_bitstate_operation('!', val1),
 					true;
+			if (is_same_node(val1, val2))
+				return new_state = make_boolean_constant(false), true;
+			if (are_complements(val1, val2))
+				return new_state = make_boolean_constant(true), true;
 
 			break;
 		}
+		case '!':
+			// Involution: NOT(NOT(x)) == x.
+			if (val1->operation == '!')
+				return new_state = val1->_1, true;
+			break;
 		default:
 			break;
 	}
@@ -129,7 +195,6 @@ constexpr counted_ptr<bitstate> make_bitstate_operation(
 	const counted_ptr<bitstate>& val1,
 	const counted_ptr<bitstate>& val2)
 {
-	counted_ptr<bitstate> new_state = make_counted<bitstate>();
 	auto [current_value, current_operation] = extract_value_and_operation(opcode);
 
 	const counted_ptr<bitstate>* vals[] = {&val1, &val2};
@@ -144,6 +209,7 @@ constexpr counted_ptr<bitstate> make_bitstate_operation(
 
 	if (is_inplace_calculable)
 	{
+		counted_ptr<bitstate> new_state = make_counted<bitstate>();
 		new_state->operation = '=';
 
 		switch (current_operation)
@@ -167,30 +233,32 @@ constexpr counted_ptr<bitstate> make_bitstate_operation(
 			default:
 				throw std::logic_error("Unknown operand");
 		}
-	}
-	else
-	{
-		if constexpr (enable_optimisers)
-		{
-			auto successful =
-				__call_optimisers(current_operation, val1, val2, new_state);
-			if (successful)
-				return new_state;
-		}
 
-		new_state->state = 0;
-		new_state->operation = current_operation;
-		new_state->_1 = val1;
-		new_state->_2 = val2;
+		return new_state;
+	}
+
+	if constexpr (enable_optimisers)
+	{
+		counted_ptr<bitstate> optimised_state;
+		const bool successful =
+			__call_optimisers(current_operation, val1, val2, optimised_state);
+		if (successful)
+			return optimised_state;
+	}
+
+	counted_ptr<bitstate> new_state = make_counted<bitstate>();
+	new_state->state = 0;
+	new_state->operation = current_operation;
+	new_state->_1 = val1;
+	new_state->_2 = val2;
 
 #ifndef WITHOUT_DEPTH_TRACKING
-		new_state->max_depth = 1 +
-			std::max(
-				(val1 ? val1->max_depth : 0),
-				(val2 ? val2->max_depth : 0)
-			);
+	new_state->max_depth = 1 +
+		std::max(
+			(val1 ? val1->max_depth : 0),
+			(val2 ? val2->max_depth : 0)
+		);
 #endif // !WITHOUT_DEPTH_TRACKING
-	}
 
 	return new_state;
 }
@@ -520,7 +588,7 @@ struct int_tracker
 			return *this;
 		}
 
-		for (ptrdiff_t i = N - 1; i >= shift; --i)
+		for (size_t i = N; i-- > shift;)
 			bits[i] = std::move(bits[i - shift]);
 		for (size_t i = 0; i < shift; ++i)
 			bits[i] = false;
@@ -1114,165 +1182,438 @@ namespace dpll
 struct engine
 {
 	using node_t = const details::bitstate*;
+	using node_id = size_t;
+	static constexpr node_id no_node = static_cast<node_id>(-1);
 
 	counted_ptr<details::bitstate> root_ptr;
 	bool target;
 	bool first_only;
 
-	std::vector<counted_ptr<details::bitstate>> vars;       // '*' decision leaves
-	std::unordered_map<node_t, std::vector<node_t>> parents; // node -> gates that read it
-	std::unordered_map<node_t, bool> value;                 // current assignments
-	std::vector<node_t> trail;                              // undo log
+	node_id root_id{no_node};
+	std::vector<counted_ptr<details::bitstate>> nodes;
+	std::unordered_map<node_t, node_id> node_ids; // build-time lookup only
+	std::vector<std::array<node_id, 2>> inputs;
+	std::vector<std::vector<node_id>> parents;
+	std::vector<node_id> vars;                // '*' decision leaves
+	std::vector<int8_t> values;               // -1 unassigned, 0 false, 1 true
+	std::vector<node_id> trail;                // undo log
+	std::vector<node_id> propagation_queue;    // reused for every decision
+
+	// Hybrid affine reasoning. UNKNOWN/AND/OR outputs are Boolean atoms;
+	// XOR and NOT regions are represented as affine forms over those atoms.
+	static constexpr size_t max_affine_atoms = 4096;
+	bool affine_enabled{false};
+	size_t affine_atom_count{0};
+	size_t affine_word_count{0};
+	std::vector<node_id> atom_nodes;
+	std::vector<node_id> node_atom_columns;
+	std::vector<std::uint64_t> affine_coefficients;
+	std::vector<std::uint8_t> affine_constants;
+	std::vector<std::uint8_t> affine_ready;
+
 	solutions_t solutions;
 
 	engine(counted_ptr<details::bitstate> root, bool tgt, bool first) :
 		root_ptr(std::move(root)), target(tgt), first_only(first) {}
 
-	std::optional<bool> value_of(node_t n) const
+	int8_t value_of(node_id id) const
 	{
-		if (!n)
-			return std::nullopt;
-		if (n->operation == '=')
-			return static_cast<bool>(n->state);
-		auto it = value.find(n);
-		if (it != value.end())
-			return it->second;
-		return std::nullopt;
+		if (id == no_node)
+			return -1;
+
+		const auto& node = nodes[id];
+		if (node->operation == '=')
+			return static_cast<int8_t>(node->state);
+		return values[id];
+	}
+
+	node_id add_node(const counted_ptr<details::bitstate>& node)
+	{
+		if (!node)
+			return no_node;
+
+		const node_t raw = node.get();
+		const auto existing = node_ids.find(raw);
+		if (existing != node_ids.end())
+			return existing->second;
+
+		const node_id id = nodes.size();
+		node_ids.emplace(raw, id);
+		nodes.push_back(node);
+		inputs.push_back({no_node, no_node});
+		parents.emplace_back();
+		values.push_back(-1);
+		return id;
 	}
 
 	void build()
 	{
-		std::set<node_t> seen;
-		std::deque<counted_ptr<details::bitstate>> stack;
-		stack.push_back(root_ptr);
-
-		while (!stack.empty())
+		root_id = add_node(root_ptr);
+		for (node_id id = 0; id < nodes.size(); ++id)
 		{
-			auto cur = std::move(stack.back());
-			stack.pop_back();
-
-			node_t raw = cur.get();
-			if (!raw || !seen.insert(raw).second)
-				continue;
-
-			const std::uint8_t op = cur->operation;
+			const auto& current = nodes[id];
+			const std::uint8_t op = current->operation;
 			if (op == '*')
-				vars.push_back(cur);
+				vars.push_back(id);
 
 			const std::uint8_t argc = details::operation_args_count[op];
-			const counted_ptr<details::bitstate>* ch[2] = {&cur->_1, &cur->_2};
+			const counted_ptr<details::bitstate>* children[2] =
+				{&current->_1, &current->_2};
 			for (std::uint8_t i = 0; i < argc; ++i)
 			{
-				if (node_t craw = ch[i]->get())
-				{
-					parents[craw].push_back(raw);
-					stack.push_back(*ch[i]);
-				}
+				const node_id child = add_node(*children[i]);
+				inputs[id][i] = child;
+				if (child != no_node)
+					parents[child].push_back(id);
 			}
 		}
+
+		// A high-fanout input participates in more constraints and is more
+		// likely to expose a contradiction early.
+		std::stable_sort(
+			vars.begin(),
+			vars.end(),
+			[&](node_id lhs, node_id rhs)
+			{
+				return parents[lhs].size() > parents[rhs].size();
+			});
+
+		propagation_queue.reserve(nodes.size());
+		trail.reserve(nodes.size());
+		initialize_affine_reasoning();
 	}
 
-	bool set_value(node_t n, bool val, std::deque<node_t>& q)
+	std::uint64_t* affine_words(node_id id)
 	{
-		auto cur = value_of(n);
-		if (cur)
-			return *cur == val;
-		value[n] = val;
-		trail.push_back(n);
-		q.push_back(n);
+		return affine_coefficients.data() + id * affine_word_count;
+	}
+
+	const std::uint64_t* affine_words(node_id id) const
+	{
+		return affine_coefficients.data() + id * affine_word_count;
+	}
+
+	void build_affine_form(node_id id)
+	{
+		if (affine_ready[id] == 1)
+			return;
+		if (affine_ready[id] == 2)
+			throw std::logic_error("Cyclic bit expression");
+
+		affine_ready[id] = 2;
+		std::uint64_t* destination = affine_words(id);
+		const std::uint8_t op = nodes[id]->operation;
+
+		if (node_atom_columns[id] != no_node)
+		{
+			const node_id column = node_atom_columns[id];
+			destination[column / 64] |=
+				std::uint64_t{1} << (column % 64);
+		}
+		else if (op == '=')
+			affine_constants[id] = nodes[id]->state;
+		else if (op == '!')
+		{
+			const node_id lhs = inputs[id][0];
+			build_affine_form(lhs);
+			std::copy_n(
+				affine_words(lhs),
+				affine_word_count,
+				destination);
+			affine_constants[id] = !affine_constants[lhs];
+		}
+		else if (op == '^')
+		{
+			const node_id lhs = inputs[id][0];
+			const node_id rhs = inputs[id][1];
+			build_affine_form(lhs);
+			build_affine_form(rhs);
+
+			const std::uint64_t* lhs_words = affine_words(lhs);
+			const std::uint64_t* rhs_words = affine_words(rhs);
+			for (size_t word = 0; word < affine_word_count; ++word)
+				destination[word] = lhs_words[word] ^ rhs_words[word];
+			affine_constants[id] =
+				affine_constants[lhs] ^ affine_constants[rhs];
+		}
+		else
+			throw std::logic_error("Unsupported affine expression");
+
+		affine_ready[id] = 1;
+	}
+
+	void initialize_affine_reasoning()
+	{
+		size_t affine_gate_count = 0;
+		node_atom_columns.assign(nodes.size(), no_node);
+
+		for (node_id id = 0; id < nodes.size(); ++id)
+		{
+			const std::uint8_t op = nodes[id]->operation;
+			if (op == '^' || op == '!')
+				++affine_gate_count;
+
+			if (op == '*' || op == '&' || op == '|')
+			{
+				node_atom_columns[id] = atom_nodes.size();
+				atom_nodes.push_back(id);
+			}
+		}
+
+		affine_atom_count = atom_nodes.size();
+		if (affine_gate_count == 0 ||
+			affine_atom_count == 0 ||
+			affine_atom_count > max_affine_atoms)
+			return;
+
+		affine_word_count = (affine_atom_count + 63) / 64;
+		affine_coefficients.assign(
+			nodes.size() * affine_word_count,
+			std::uint64_t{0});
+		affine_constants.assign(nodes.size(), 0);
+		affine_ready.assign(nodes.size(), 0);
+
+		for (node_id id = 0; id < nodes.size(); ++id)
+			build_affine_form(id);
+
+		affine_enabled = true;
+	}
+
+	struct affine_row
+	{
+		std::vector<std::uint64_t> coefficients;
+		bool rhs{false};
+	};
+
+	bool propagate_affine()
+	{
+		if (!affine_enabled)
+			return true;
+
+		std::vector<affine_row> rows;
+		rows.reserve(trail.size());
+
+		for (const node_id id : trail)
+		{
+			affine_row row;
+			row.coefficients.assign(
+				affine_words(id),
+				affine_words(id) + affine_word_count);
+			row.rhs =
+				static_cast<bool>(values[id]) ^
+				static_cast<bool>(affine_constants[id]);
+			rows.push_back(std::move(row));
+		}
+
+		size_t rank = 0;
+		for (size_t column = 0;
+			column < affine_atom_count && rank < rows.size();
+			++column)
+		{
+			const size_t word = column / 64;
+			const std::uint64_t bit =
+				std::uint64_t{1} << (column % 64);
+
+			size_t pivot = rank;
+			while (pivot < rows.size() &&
+				!(rows[pivot].coefficients[word] & bit))
+				++pivot;
+			if (pivot == rows.size())
+				continue;
+
+			std::swap(rows[rank], rows[pivot]);
+			for (size_t row_index = 0; row_index < rows.size(); ++row_index)
+			{
+				if (row_index == rank ||
+					!(rows[row_index].coefficients[word] & bit))
+					continue;
+
+				for (size_t current_word = 0;
+					current_word < affine_word_count;
+					++current_word)
+					rows[row_index].coefficients[current_word] ^=
+						rows[rank].coefficients[current_word];
+				rows[row_index].rhs =
+					rows[row_index].rhs != rows[rank].rhs;
+			}
+			++rank;
+		}
+
+		for (const auto& row : rows)
+		{
+			size_t set_bits = 0;
+			size_t only_column = 0;
+			for (size_t word = 0; word < affine_word_count; ++word)
+			{
+				const size_t word_bits =
+					std::popcount(row.coefficients[word]);
+				if (word_bits != 0)
+				{
+					set_bits += word_bits;
+					if (set_bits == 1)
+						only_column =
+							word * 64 +
+							std::countr_zero(row.coefficients[word]);
+				}
+			}
+
+			if (set_bits == 0)
+			{
+				if (row.rhs)
+					return false;
+				continue;
+			}
+
+			if (set_bits == 1 &&
+				!set_value(atom_nodes[only_column], row.rhs))
+				return false;
+		}
+
 		return true;
 	}
 
-	static bool relation_holds(std::uint8_t op, bool g, bool a, bool b)
+	bool set_value(node_id id, bool value)
 	{
-		switch (op)
-		{
-			case '!': return g == (!a);
-			case '^': return g == (a ^ b);
-			case '&': return g == (a & b);
-			case '|': return g == (a | b);
-			default:  return true;
-		}
+		const int8_t current = value_of(id);
+		if (current != -1)
+			return current == static_cast<int8_t>(value);
+
+		values[id] = static_cast<int8_t>(value);
+		trail.push_back(id);
+		propagation_queue.push_back(id);
+		return true;
 	}
 
-	// Enforce the local relation of gate g over {g, inputs}: detect conflicts
-	// and force any input/output that is uniquely determined.
-	bool imply(node_t g, std::deque<node_t>& q)
+	// Enforce the local relation of gate g over {g, inputs}. Each supported
+	// operation has direct implication rules, avoiding repeated truth-table
+	// enumeration in this hot path.
+	bool imply(node_id gate)
 	{
-		const std::uint8_t op = g->operation;
+		const std::uint8_t op = nodes[gate]->operation;
 		if (op == '=' || op == '*')
 			return true;
 
-		const node_t nodes[3] = {g, g->_1.get(), (op == '!' ? nullptr : g->_2.get())};
-		const size_t cnt = (op == '!') ? 2 : 3;
+		const node_id lhs_id = inputs[gate][0];
+		const node_id rhs_id = inputs[gate][1];
+		int8_t output = value_of(gate);
+		int8_t lhs = value_of(lhs_id);
+		int8_t rhs = value_of(rhs_id);
 
-		std::optional<bool> known[3];
-		for (size_t i = 0; i < cnt; ++i)
-			known[i] = value_of(nodes[i]);
-
-		bool feasible = false;
-		int forced[3] = {-1, -1, -1}; // -1 unseen, 0/1 single value, 2 ambiguous
-		for (int mask = 0; mask < (1 << cnt); ++mask)
+		if (op == '!')
 		{
-			bool vals[3] = {false, false, false};
-			bool ok = true;
-			for (size_t i = 0; i < cnt && ok; ++i)
-			{
-				vals[i] = (mask >> i) & 1;
-				if (known[i] && *known[i] != vals[i])
-					ok = false;
-			}
-			if (!ok || !relation_holds(op, vals[0], vals[1], cnt == 3 ? vals[2] : false))
-				continue;
-
-			feasible = true;
-			for (size_t i = 0; i < cnt; ++i)
-				forced[i] = (forced[i] == -1) ? vals[i] : (forced[i] != vals[i] ? 2 : forced[i]);
+			if (output != -1 && lhs != -1)
+				return output == static_cast<int8_t>(!lhs);
+			if (output != -1)
+				return set_value(lhs_id, !output);
+			if (lhs != -1)
+				return set_value(gate, !lhs);
+			return true;
 		}
 
-		if (!feasible)
-			return false; // contradiction
+		if (op == '^')
+		{
+			if (lhs != -1 && rhs != -1)
+				return set_value(gate, lhs != rhs);
+			if (output != -1 && lhs != -1)
+				return set_value(rhs_id, output != lhs);
+			if (output != -1 && rhs != -1)
+				return set_value(lhs_id, output != rhs);
+			return true;
+		}
 
-		for (size_t i = 0; i < cnt; ++i)
-			if (!known[i] && forced[i] != 2)
-				if (!set_value(nodes[i], forced[i] == 1, q))
+		if (op == '&')
+		{
+			if (lhs == 0 || rhs == 0)
+			{
+				if (!set_value(gate, false))
+					return false;
+			}
+			else if (lhs == 1 && rhs == 1)
+			{
+				if (!set_value(gate, true))
+					return false;
+			}
+
+			output = value_of(gate);
+			lhs = value_of(lhs_id);
+			rhs = value_of(rhs_id);
+
+			if (output == 1)
+				return set_value(lhs_id, true) && set_value(rhs_id, true);
+			if (output == 0 && lhs == 1)
+				return set_value(rhs_id, false);
+			if (output == 0 && rhs == 1)
+				return set_value(lhs_id, false);
+			return true;
+		}
+
+		if (op == '|')
+		{
+			if (lhs == 1 || rhs == 1)
+			{
+				if (!set_value(gate, true))
+					return false;
+			}
+			else if (lhs == 0 && rhs == 0)
+			{
+				if (!set_value(gate, false))
+					return false;
+			}
+
+			output = value_of(gate);
+			lhs = value_of(lhs_id);
+			rhs = value_of(rhs_id);
+
+			if (output == 0)
+				return set_value(lhs_id, false) && set_value(rhs_id, false);
+			if (output == 1 && lhs == 0)
+				return set_value(rhs_id, true);
+			if (output == 1 && rhs == 0)
+				return set_value(lhs_id, true);
+			return true;
+		}
+
+		throw std::logic_error("Unknown gate operation");
+	}
+
+	bool propagate()
+	{
+		size_t cursor = 0;
+		while (true)
+		{
+			while (cursor < propagation_queue.size())
+			{
+				const node_id id = propagation_queue[cursor++];
+
+				if (!imply(id)) // id as the output of its own gate
 					return false;
 
-		return true;
-	}
-
-	bool propagate(std::deque<node_t>& q)
-	{
-		while (!q.empty())
-		{
-			const node_t n = q.front();
-			q.pop_front();
-
-			if (!imply(n, q)) // n as the output of its own gate
-				return false;
-
-			auto it = parents.find(n);
-			if (it != parents.end())
-				for (node_t p : it->second) // n as an input of each parent gate
-					if (!imply(p, q))
+				for (const node_id parent : parents[id])
+					if (!imply(parent)) // id as an input of a parent gate
 						return false;
+			}
+
+			const size_t previous_trail_size = trail.size();
+			if (!propagate_affine())
+				return false;
+			if (trail.size() == previous_trail_size)
+				return true;
 		}
-		return true;
 	}
 
-	bool assign(node_t n, bool val)
+	bool assign(node_id id, bool value)
 	{
-		std::deque<node_t> q;
-		if (!set_value(n, val, q))
+		propagation_queue.clear();
+		if (!set_value(id, value))
 			return false;
-		return propagate(q);
+		return propagate();
 	}
 
 	void undo_to(size_t mark)
 	{
 		while (trail.size() > mark)
 		{
-			value.erase(trail.back());
+			values[trail.back()] = -1;
 			trail.pop_back();
 		}
 	}
@@ -1280,13 +1621,40 @@ struct engine
 	void record()
 	{
 		crs_state s;
-		for (const auto& v : vars)
+		for (const node_id variable : vars)
 		{
-			auto it = value.find(v.get());
-			if (it != value.end())
-				s.assignments[v] = it->second;
+			const int8_t value = value_of(variable);
+			if (value != -1)
+				s.assignments[nodes[variable]] = value != 0;
 		}
 		solutions.insert(std::move(s));
+	}
+
+	bool preferred_phase(node_id variable) const
+	{
+		size_t false_votes = 0;
+		size_t true_votes = 0;
+
+		for (const node_id parent : parents[variable])
+		{
+			const int8_t output = value_of(parent);
+			if (output == -1)
+				continue;
+
+			switch (nodes[parent]->operation)
+			{
+				case '&':
+					(output == 1 ? true_votes : false_votes) += 2;
+					break;
+				case '|':
+					(output == 0 ? false_votes : true_votes) += 2;
+					break;
+				default:
+					break;
+			}
+		}
+
+		return true_votes > false_votes;
 	}
 
 	void search()
@@ -1294,24 +1662,25 @@ struct engine
 		if (first_only && !solutions.empty())
 			return;
 
-		node_t pick = nullptr;
-		for (const auto& v : vars)
-			if (!value_of(v.get()))
+		node_id pick = no_node;
+		for (const node_id variable : vars)
+			if (value_of(variable) == -1)
 			{
-				pick = v.get();
+				pick = variable;
 				break;
 			}
 
-		if (!pick) // every decision leaf is assigned -> complete solution
+		if (pick == no_node) // every decision leaf is assigned
 		{
 			record();
 			return;
 		}
 
-		for (int bv = 0; bv < 2; ++bv)
+		const bool first_phase = preferred_phase(pick);
+		for (const bool phase : {first_phase, !first_phase})
 		{
 			const size_t mark = trail.size();
-			if (assign(pick, bv != 0))
+			if (assign(pick, phase))
 				search();
 			undo_to(mark);
 
@@ -1323,7 +1692,7 @@ struct engine
 	solutions_t run()
 	{
 		build();
-		if (!assign(root_ptr.get(), target)) // seed the requirement root == target
+		if (!assign(root_id, target)) // seed the requirement root == target
 			return solutions; // unsatisfiable
 		search();
 		return solutions;

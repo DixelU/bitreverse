@@ -1,0 +1,224 @@
+#include <cstddef>
+#include <iostream>
+#include <set>
+#include <stdexcept>
+
+#include "bitreverse.h"
+
+namespace br = dixelu::bitreverse;
+
+namespace
+{
+
+bool is_constant(const br::bit_tracker& bit, bool expected)
+{
+	return bit.bit_state->operation == '=' &&
+		static_cast<bool>(bit.bit_state->state) == expected;
+}
+
+void require(bool condition, const char* message)
+{
+	if (!condition)
+		throw std::runtime_error(message);
+}
+
+void expression_simplification_tests()
+{
+	br::bit_tracker x;
+	x = br::unknown;
+	const auto same_as_x = [&](const br::bit_tracker& bit)
+	{
+		return bit.bit_state == x.bit_state;
+	};
+
+	require(same_as_x(x & x), "x & x must simplify to x");
+	require(same_as_x(x | x), "x | x must simplify to x");
+	require(is_constant(x ^ x, false), "x ^ x must simplify to false");
+
+	require(is_constant(x & !x, false), "x & !x must simplify to false");
+	require(is_constant(x | !x, true), "x | !x must simplify to true");
+	require(is_constant(x ^ !x, true), "x ^ !x must simplify to true");
+	require(same_as_x(!!x), "!!x must simplify to x");
+
+	br::bit_tracker y;
+	y = br::unknown;
+	require(same_as_x(x & (x | y)), "x & (x | y) must simplify to x");
+	require(same_as_x((y | x) & x), "(y | x) & x must simplify to x");
+	require(same_as_x(x | (x & y)), "x | (x & y) must simplify to x");
+	require(same_as_x((y & x) | x), "(y & x) | x must simplify to x");
+
+	// CRC-style mask construction: negating an integer containing only one
+	// symbolic low bit produces that bit replicated across the entire word.
+	const br::int_tracker<8> one_bit(x);
+	const auto mask = -one_bit;
+	for (const auto& bit : mask.bits)
+		require(same_as_x(bit), "-int_tracker(bit) must replicate bit");
+}
+
+void solver_regression_tests()
+{
+	br::bit_tracker x;
+	br::bit_tracker y;
+	br::bit_tracker z;
+	x = br::unknown;
+	y = br::unknown;
+	z = br::unknown;
+
+	const auto expression = (x & y) | z;
+	const br::bit_tracker expected(true);
+
+	const auto all = br::assert_equality(expression, expected);
+	require(all.size() == 5, "(x & y) | z must have five complete true assignments");
+
+	const auto first = br::assert_equality(expression, expected, true);
+	require(first.size() == 1, "first-only solving must return one assignment");
+
+	bool unsatisfiable = false;
+	try
+	{
+		const br::bit_tracker impossible = x & !x;
+		(void)br::assert_equality(impossible, expected);
+	}
+	catch (const std::runtime_error&)
+	{
+		unsatisfiable = true;
+	}
+	require(unsatisfiable, "constant-false equality with true must be unsatisfiable");
+}
+
+using truth_table_t = std::set<unsigned>;
+
+truth_table_t solve_binary_truth_table(
+	char operation,
+	bool expected)
+{
+	br::bit_tracker x;
+	br::bit_tracker y;
+	x = br::unknown;
+	y = br::unknown;
+
+	br::bit_tracker expression;
+	switch (operation)
+	{
+		case '&': expression = x & y; break;
+		case '|': expression = x | y; break;
+		case '^': expression = x ^ y; break;
+		default: throw std::logic_error("unknown test operation");
+	}
+
+	const br::bit_tracker expected_bit(expected);
+	const auto solutions =
+		br::assert_equality(expression, expected_bit);
+	truth_table_t result;
+	for (const auto& solution : solutions)
+	{
+		const bool x_value = solution.assignments.at(x.bit_state);
+		const bool y_value = solution.assignments.at(y.bit_state);
+		result.insert(
+			static_cast<unsigned>(x_value) |
+			(static_cast<unsigned>(y_value) << 1));
+	}
+	return result;
+}
+
+void exhaustive_gate_solver_tests()
+{
+	require(
+		solve_binary_truth_table('&', false) == truth_table_t{0, 1, 2},
+		"AND=false truth table mismatch");
+	require(
+		solve_binary_truth_table('&', true) == truth_table_t{3},
+		"AND=true truth table mismatch");
+	require(
+		solve_binary_truth_table('|', false) == truth_table_t{0},
+		"OR=false truth table mismatch");
+	require(
+		solve_binary_truth_table('|', true) == truth_table_t{1, 2, 3},
+		"OR=true truth table mismatch");
+	require(
+		solve_binary_truth_table('^', false) == truth_table_t{0, 3},
+		"XOR=false truth table mismatch");
+	require(
+		solve_binary_truth_table('^', true) == truth_table_t{1, 2},
+		"XOR=true truth table mismatch");
+
+	br::bit_tracker x;
+	x = br::unknown;
+	const auto not_x = !x;
+	const br::bit_tracker false_bit(false);
+	const br::bit_tracker true_bit(true);
+	const auto not_false =
+		br::assert_equality(not_x, false_bit);
+	const auto not_true =
+		br::assert_equality(not_x, true_bit);
+	require(
+		not_false.size() == 1 &&
+			not_false.begin()->assignments.at(x.bit_state),
+		"NOT=false truth table mismatch");
+	require(
+		not_true.size() == 1 &&
+			!not_true.begin()->assignments.at(x.bit_state),
+		"NOT=true truth table mismatch");
+}
+
+template<template<size_t> typename int_tracker>
+int_tracker<32> tracked_crc32(const std::vector<int_tracker<8>>& message)
+{
+	int_tracker<32> byte;
+	int_tracker<32> mask;
+	int_tracker<32> crc = 0xFFFFFFFF;
+	const int_tracker<32> polynomial = 0xEDB88320;
+
+	for (const auto& character : message)
+	{
+		byte = int_tracker<32>(character);
+		crc ^= byte;
+
+		for (int bit = 0; bit < 8; ++bit)
+		{
+			mask = -(crc & 1);
+			crc = (crc >> 1) ^ (polynomial & mask);
+		}
+	}
+
+	return ~crc;
+}
+
+void crc_hybrid_solver_regression_test()
+{
+	const std::vector<br::itu8> known_message =
+		{'b', 'i', 't', 'r', 'e', 'v', '!'};
+	const auto expected_crc = tracked_crc32(known_message);
+
+	std::vector<br::itu8> unknown_message =
+		{br::unknown, br::unknown, br::unknown, br::unknown,
+			br::unknown, br::unknown, br::unknown};
+	const auto symbolic_crc = tracked_crc32(unknown_message);
+
+	const auto solutions =
+		br::assert_equality<32>(symbolic_crc, expected_crc, true);
+	require(
+		solutions.size() == 1,
+		"seven-byte CRC reversal must find one solution");
+
+	for (auto& byte : unknown_message)
+		br::assign_assert_result<8>(
+			byte,
+			solutions.begin()->assignments);
+
+	const auto actual_crc = tracked_crc32(unknown_message);
+	require(
+		actual_crc.__to_string() == expected_crc.__to_string(),
+		"reversed message must reproduce the target CRC");
+}
+
+}
+
+int main()
+{
+	expression_simplification_tests();
+	solver_regression_tests();
+	exhaustive_gate_solver_tests();
+	crc_hybrid_solver_regression_test();
+	std::cout << "All bitreverse tests passed\n";
+}

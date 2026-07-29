@@ -86,17 +86,17 @@ void real_crc32_reversal()
 
 	auto crc32_result = crc32(hashed_string);
 	auto crc32_result_differs = dixelu::bitreverse::bit_tracker(crc32_result ^ result);
-	auto is_false = crc32_result_differs | hashed_string_is_not_ascii;
-	dixelu::bitreverse::bit_tracker _true(true);
+	auto is_false = crc32_result_differs; //| hashed_string_is_not_ascii;
+	dixelu::bitreverse::bit_tracker _false(false);
 
 	std::cout << "Real CRC32 reversal test" << std::endl;
-	auto reversal_result = dixelu::bitreverse::assert_equality(is_false, _true);
+	auto reversal_result = dixelu::bitreverse::assert_equality(is_false, _false);
 
 	size_t counter = 0;
 	std::cout << "Size: " << reversal_result.size() << std::endl;
 	for (auto& solution : reversal_result)
 	{
-		++counter; 
+		++counter;
 		std::cout << "=== SOLUTION " << counter << " ===" << std::endl;
 		for (auto single_char : hashed_string)
 		{
@@ -119,7 +119,7 @@ int main()
 	// std::cout << "S: " << (x + y + z).__to_string() << std::endl;
 
 	bitwise_reversal_test();
-	
+
 	real_crc32_reversal();
 
 	return 0;

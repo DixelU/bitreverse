@@ -68,7 +68,7 @@ class sat_solver
 		size_t i = 0;
 		while (i < _trail.size())
 		{
-			//literal_t lit = _trail[i++];
+			++i;
 			for (const auto& clause : _clauses)
 			{
 				if (!is_satisfied(clause))

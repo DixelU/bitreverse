@@ -7,3 +7,12 @@ add_executable(bitreverse main.cpp)
 
 target_compile_options(bitreverse PUBLIC -Wall -Wextra -Wuninitialized -pedantic -fstack-protector-all -O3 -ggdb)
 #target_link_options(bitreverse PUBLIC -fsanitize=address)
+
+include(CTest)
+
+if(BUILD_TESTING)
+    add_executable(bitreverse_tests tests.cpp)
+    target_compile_options(bitreverse_tests PRIVATE -Wall -Wextra -Wuninitialized -pedantic -fstack-protector-all -O3 -ggdb)
+    add_test(NAME bitreverse_tests COMMAND bitreverse_tests)
+    set_tests_properties(bitreverse_tests PROPERTIES TIMEOUT 10)
+endif()
