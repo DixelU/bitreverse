@@ -722,42 +722,42 @@ struct int_tracker
 	constexpr self_type& operator*=(const self_type& rhs)
 	{
 		self_type result{};
+		self_type shifted = *this;
 
 		for (size_t i = 0; i < N; ++i)
 		{
-			// or << (1ull << i) if you prefer
-			self_type shifted = *this << i;
-
 			result = __execute_ternary_assign(
-				rhs.bits[i],
+				rhs.bits[N - i - 1],
 				result + shifted,
 				result);
+			shifted <<= 1;
 		}
 
 		return (*this = std::move(result));
 	}
 
-	constexpr self_type divmod(const self_type& divisor, self_type& remainder)
+	constexpr self_type divmod(const self_type& divisor, self_type& remainder) const
 	{
-		// Special-case zero divisor if you care; otherwise undefined behaviour is fine.
+		const self_type dividend = *this;
 		self_type quotient{};
-		remainder = *this;
+		remainder = self_type{};
 
-		for (size_t i = N; i-- > 0; )
+		for (size_t i = 0; i < N; ++i)
 		{
-			// remainder = (remainder << 1) | bit_from_original, but we already
-			// have the whole value, so just shift the remainder left each step.
 			remainder <<= 1;
+			remainder.bits[N - 1] = dividend.bits[i];
 
-			// try to subtract divisor
-			self_type remainder_copy = remainder;
+			const self_type previous_remainder = remainder;
+			self_type trial = previous_remainder;
 			bit_tracker carry = false;
 
-			self_type trial = remainder_copy.self_sub_ret_carry(divisor, carry);
-			auto no_underflow = !carry;
+			trial.self_sub_ret_carry(divisor, carry);
+			auto no_underflow = carry;
 
-			remainder = __execute_ternary_assign(no_underflow, trial, remainder);
-
+			remainder = __execute_ternary_assign(
+				no_underflow,
+				trial,
+				previous_remainder);
 			quotient.bits[i] = no_underflow;
 		}
 
@@ -803,7 +803,10 @@ struct int_tracker
 
 	[[nodiscard]] static bit_tracker are_equal(const self_type& lhs, const self_type& rhs)
 	{
-		return lhs ^= rhs;
+		bit_tracker res = true;
+		for (size_t i = 0; i < N; ++i)
+			res &= !(lhs.bits[i] ^ rhs.bits[i]);
+		return res;
 	}
 };
 

@@ -1,4 +1,6 @@
+#include <array>
 #include <cstddef>
+#include <cstdint>
 #include <iostream>
 #include <set>
 #include <stdexcept>
@@ -21,6 +23,78 @@ void require(bool condition, const char* message)
 {
 	if (!condition)
 		throw std::runtime_error(message);
+}
+
+struct pool_probe
+{
+	static inline size_t live = 0;
+	static inline size_t destroyed = 0;
+
+	explicit pool_probe(size_t value) : value(value)
+	{
+		++live;
+	}
+
+	~pool_probe()
+	{
+		--live;
+		++destroyed;
+	}
+
+	size_t value;
+};
+
+void counted_ptr_pool_tests()
+{
+	constexpr size_t object_count = 513;
+	pool_probe::live = 0;
+	pool_probe::destroyed = 0;
+	auto& pool =
+		dixelu::details::counted_control_block_pool<pool_probe>();
+	const auto initial_statistics = pool.get_statistics();
+
+	std::vector<dixelu::counted_ptr<pool_probe>> objects;
+	objects.reserve(object_count);
+	for (size_t i = 0; i < object_count; ++i)
+		objects.push_back(dixelu::make_counted<pool_probe>(i));
+	const auto populated_statistics = pool.get_statistics();
+	require(
+		populated_statistics.slabs == initial_statistics.slabs + 1 &&
+			populated_statistics.live == object_count,
+		"counted_ptr must allocate objects in a buffered slab");
+
+	std::set<const pool_probe*> released_addresses;
+	for (size_t i = 0; i < object_count; i += 3)
+	{
+		released_addresses.insert(objects[i].get());
+		objects[i].reset();
+	}
+
+	std::vector<dixelu::counted_ptr<pool_probe>> replacements;
+	replacements.reserve(released_addresses.size());
+	for (size_t i = 0; i < released_addresses.size(); ++i)
+	{
+		auto replacement = dixelu::make_counted<pool_probe>(object_count + i);
+		require(
+			released_addresses.contains(replacement.get()),
+			"counted_ptr pool must recycle arbitrary-order releases");
+		replacements.push_back(std::move(replacement));
+	}
+
+	const auto reused_statistics = pool.get_statistics();
+	require(
+		reused_statistics.slabs == populated_statistics.slabs &&
+			reused_statistics.live == object_count &&
+			pool_probe::live == object_count,
+		"counted_ptr pool lost track of a live object");
+	objects.clear();
+	replacements.clear();
+	const auto cleared_statistics = pool.get_statistics();
+	require(
+		cleared_statistics.live == 0 &&
+			pool_probe::live == 0 &&
+			pool_probe::destroyed == object_count + released_addresses.size(),
+		"counted_ptr pool must destroy each object exactly once");
 }
 
 void expression_simplification_tests()
@@ -398,25 +472,56 @@ void exhaustive_gate_solver_tests()
 
 void multiplication_and_division_tests()
 {
+	using u8 = br::int_tracker<8>;
 	using u32 = br::int_tracker<32>;
 
-	const auto is_same = [](const u32& rhs, const u32& lhs)
+	const auto is_same = []<size_t N>(
+		const br::int_tracker<N>& actual,
+		std::uintmax_t expected)
 	{
-		for (int i = 0; i < 32; ++i)
-		{
-			if (rhs.bits[i].bit_state->state != lhs.bits[i].bit_state->state)\
+		const br::int_tracker<N> expected_value{expected};
+		for (size_t i = 0; i < N; ++i)
+			if (actual.bits[i].bit_state->state !=
+				expected_value.bits[i].bit_state->state)
 				return false;
-		}
 		return true;
 	};
 
-	for (uint32_t i = 13089; i < 83939; ++i)
+	constexpr std::array<std::uint8_t, 16> divisors{
+		1, 2, 3, 7, 8, 15, 16, 31,
+		32, 63, 64, 127, 128, 129, 254, 255};
+
+	require(is_same(u8{255} * u8{0}, 0), "broken multiplication");
+	for (std::uint16_t i = 0; i <= UINT8_MAX; ++i)
 	{
-		for (uint32_t j = 1; j < 16556; ++j)
+		for (const std::uint8_t j : divisors)
 		{
-			require(is_same(u32{i} / u32{j}, i / j), "broken division");
-			require(is_same(u32{i} % u32{j}, i % j), "broken remainder");
+			require(
+				is_same(u8{i} * u8{j}, static_cast<std::uint8_t>(i * j)),
+				"broken multiplication");
+			require(is_same(u8{i} / u8{j}, i / j), "broken division");
+			require(is_same(u8{i} % u8{j}, i % j), "broken remainder");
 		}
+	}
+
+	std::uint32_t random_state = 0x6d2b79f5;
+	for (size_t sample = 0; sample < 512; ++sample)
+	{
+		random_state = random_state * 1664525u + 1013904223u;
+		const std::uint32_t lhs = random_state;
+		random_state = random_state * 1664525u + 1013904223u;
+		const std::uint32_t rhs_candidate =
+			random_state ^ (random_state >> 16);
+		const std::uint32_t rhs = rhs_candidate ? rhs_candidate : 1;
+
+		require(
+			is_same(
+				u32{lhs} * u32{rhs},
+				static_cast<std::uint32_t>(
+					static_cast<std::uint64_t>(lhs) * rhs)),
+			"broken multiplication");
+		require(is_same(u32{lhs} / u32{rhs}, lhs / rhs), "broken division");
+		require(is_same(u32{lhs} % u32{rhs}, lhs % rhs), "broken remainder");
 	}
 }
 
@@ -570,6 +675,7 @@ void md5_one_unknown_byte_reversal_test()
 
 int main()
 {
+	counted_ptr_pool_tests();
 	multiplication_and_division_tests();
 	expression_simplification_tests();
 	solver_regression_tests();

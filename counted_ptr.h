@@ -1,6 +1,12 @@
 #ifndef DIXELU_COUNTED_PTR_H
 #define DIXELU_COUNTED_PTR_H
 
+#include <cstddef>
+#include <type_traits>
+#include <utility>
+
+#include "buffered_object_pool.h"
+
 namespace dixelu
 {
 
@@ -11,9 +17,30 @@ template<typename T>
 struct counted_control_block
 {
 	using t_type = std::remove_cvref_t<T>;
-	t_type _p{};
-	std::size_t _c{0};
+
+	template<typename... Args>
+	constexpr explicit counted_control_block(Args&&... args) :
+		_p(std::forward<Args>(args)...),
+		_c(1)
+	{}
+
+	t_type _p;
+	std::size_t _c;
 };
+
+namespace details
+{
+
+template<typename T>
+buffered_object_pool<counted_control_block<T>>& counted_control_block_pool()
+{
+	// counted_ptr itself is non-atomic and intentionally single-threaded, so
+	// its allocation path does not pay for locks or atomic synchronization.
+	static buffered_object_pool<counted_control_block<T>> pool;
+	return pool;
+}
+
+} // namespace details
 
 template<typename T>
 struct enable_counted_from_this
@@ -110,12 +137,20 @@ struct counted_ptr
 	}
 
 	template<class... Args>
-	constexpr static self_type make_counted(Args... args)
+	constexpr static self_type make_counted(Args&&... args)
 	{
 		self_type ptr;
-		ptr._base = new counted_control_block<t_type>{
-			._p = t_type(std::forward<Args>(args)...),
-			._c = 1};
+		if consteval
+		{
+			ptr._base = new counted_control_block<t_type>(
+				std::forward<Args>(args)...);
+		}
+		else
+		{
+			ptr._base =
+				details::counted_control_block_pool<t_type>().create(
+					std::forward<Args>(args)...);
+		}
 
 		assign_ctrl_block(ptr);
 		return ptr;
@@ -130,7 +165,7 @@ private:
 	std::enable_if_t<std::is_base_of_v<enable_counted_from_this<Q>, Q>>
 	assign_ctrl_block(counted_ptr<Q>& ptr)
 	{
-		ptr->set_ctrl_(ptr._base);
+		ptr->set_control_block(ptr._base);
 	}
 
 	template<typename Q = t_type>
@@ -145,7 +180,16 @@ private:
 			auto count = --_base->_c;
 
 			if (!count)
-				delete _base;
+			{
+				if consteval
+				{
+					delete _base;
+				}
+				else
+				{
+					details::counted_control_block_pool<t_type>().destroy(_base);
+				}
+			}
 
 			_base = nullptr;
 		}
