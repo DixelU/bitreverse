@@ -19,6 +19,17 @@ bool is_constant(const br::bit_tracker& bit, bool expected)
 		static_cast<bool>(bit.bit_state->state) == expected;
 }
 
+constexpr bool constexpr_boolean_operation_test()
+{
+	const br::bit_tracker false_value(false);
+	const br::bit_tracker true_value(true);
+	const auto result = (false_value | true_value) & !false_value;
+	return result.bit_state->operation == '=' &&
+		result.bit_state->state;
+}
+
+static_assert(constexpr_boolean_operation_test());
+
 void require(bool condition, const char* message)
 {
 	if (!condition)
@@ -99,6 +110,16 @@ void counted_ptr_pool_tests()
 
 void expression_simplification_tests()
 {
+	const br::bit_tracker false_a(false);
+	const br::bit_tracker false_b(false);
+	const br::bit_tracker true_a(true);
+	const br::bit_tracker true_b(true);
+	require(
+		false_a.bit_state == false_b.bit_state &&
+			true_a.bit_state == true_b.bit_state &&
+			false_a.bit_state != true_a.bit_state,
+		"boolean constants must use the shared flyweight nodes");
+
 	br::bit_tracker x;
 	x = br::unknown;
 	const auto same_as_x = [&](const br::bit_tracker& bit)
@@ -501,6 +522,18 @@ void multiplication_and_division_tests()
 				"broken multiplication");
 			require(is_same(u8{i} / u8{j}, i / j), "broken division");
 			require(is_same(u8{i} % u8{j}, i % j), "broken remainder");
+
+			u8 difference{i};
+			br::bit_tracker no_underflow = false;
+			difference.self_sub_ret_carry(u8{j}, no_underflow);
+			require(
+				is_same(
+					difference,
+					static_cast<std::uint8_t>(i - j)),
+				"broken direct subtraction");
+			require(
+				is_constant(no_underflow, i >= j),
+				"subtraction carry must indicate no underflow");
 		}
 	}
 

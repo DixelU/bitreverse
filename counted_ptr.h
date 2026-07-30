@@ -140,6 +140,7 @@ struct counted_ptr
 	constexpr static self_type make_counted(Args&&... args)
 	{
 		self_type ptr;
+
 		if consteval
 		{
 			ptr._base = new counted_control_block<t_type>(
@@ -175,24 +176,25 @@ private:
 
 	constexpr void destroy_()
 	{
-		if (_base)
+		if (!_base)
+			return;
+
+		auto count = --_base->_c;
+
+		if (!count)
 		{
-			auto count = --_base->_c;
-
-			if (!count)
+			if consteval
 			{
-				if consteval
-				{
-					delete _base;
-				}
-				else
-				{
-					details::counted_control_block_pool<t_type>().destroy(_base);
-				}
+				delete _base;
 			}
-
-			_base = nullptr;
+			else
+			{
+				details::counted_control_block_pool<t_type>().destroy(_base);
+			}
 		}
+
+		_base = nullptr;
+
 	}
 
 	counted_control_block<t_type>* _base;

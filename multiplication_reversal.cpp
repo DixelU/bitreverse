@@ -203,7 +203,7 @@ int main()
 	// Example Public Key X and Y
 	// You should replace these with your actual target point components
 	ECPoint<256> target_pub;
-	target_pub.x = from_hex<256>("d631cd2a1f63dbb42614c70a08313715fd86343c53d87195dc5bd8cd17cc186e");
+	target_pub.x = from_hex<256>("92252af37a85ac73775808d8aef18e108430ab41d17984fce9be981af76f6af3");
 	target_pub.y = from_hex<256>("d631cd2a1f63dbb42614c70a08313715fd86343c53d87195dc5bd8cd17cc186e");
 	target_pub.is_infinity = false;
 

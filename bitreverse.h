@@ -68,6 +68,35 @@ constexpr std::array<std::uint8_t, 256> get_operation_args_count()
 
 constexpr auto operation_args_count = get_operation_args_count();
 
+constexpr counted_ptr<bitstate> make_fresh_boolean_constant(bool value)
+{
+	auto state = make_counted<bitstate>();
+	state->state = value;
+	state->operation = '=';
+	return state;
+}
+
+inline const counted_ptr<bitstate>& runtime_boolean_constant(bool value)
+{
+	static const counted_ptr<bitstate> false_state =
+		make_fresh_boolean_constant(false);
+	static const counted_ptr<bitstate> true_state =
+		make_fresh_boolean_constant(true);
+	return value ? true_state : false_state;
+}
+
+constexpr counted_ptr<bitstate> make_boolean_constant(bool value)
+{
+	if consteval
+	{
+		return make_fresh_boolean_constant(value);
+	}
+	else
+	{
+		return runtime_boolean_constant(value);
+	}
+}
+
 constexpr counted_ptr<bitstate> make_bitstate_operation(
 	std::uint8_t opcode,
 	const counted_ptr<bitstate>& val1 = {},
@@ -105,12 +134,6 @@ constexpr bool contains_operand(
 		expression->operation == operation &&
 		(is_same_node(expression->_1, operand) ||
 			is_same_node(expression->_2, operand));
-}
-
-constexpr counted_ptr<bitstate> make_boolean_constant(bool value)
-{
-	return make_bitstate_operation(
-		static_cast<std::uint8_t>('=' | (static_cast<std::uint8_t>(value) << 7)));
 }
 
 constexpr bool __call_optimisers(
@@ -215,32 +238,31 @@ constexpr counted_ptr<bitstate> make_bitstate_operation(
 
 	if (is_inplace_calculable)
 	{
-		counted_ptr<bitstate> new_state = make_counted<bitstate>();
-		new_state->operation = '=';
+		bool result = false;
 
 		switch (current_operation)
 		{
 			case '|':
-				new_state->state = (val1->state | val2->state);
+				result = val1->state | val2->state;
 				break;
 			case '&':
-				new_state->state = (val1->state & val2->state);
+				result = val1->state & val2->state;
 				break;
 			case '^':
-				new_state->state = (val1->state ^ val2->state);
+				result = val1->state ^ val2->state;
 				break;
 			case '!':
 			case '~':
-				new_state->state = ~val1->state;
+				result = !val1->state;
 				break;
 			case '=':
-				new_state->state = current_value;
+				result = current_value;
 				break;
 			default:
 				throw std::logic_error("Unknown operand");
 		}
 
-		return new_state;
+		return make_boolean_constant(result);
 	}
 
 	if constexpr (enable_optimisers)
@@ -672,9 +694,12 @@ struct int_tracker
 			auto& lhs_bit = bits[N - 1 - i];
 			auto& rhs_bit = rhs.ref.bits[N - 1 - i];
 
-			auto xor_bit = lhs_bit ^ rhs_bit ^ carry;
-			carry = (rhs_bit & carry & !lhs_bit) | (lhs_bit & (rhs_bit | carry));
-			lhs_bit = xor_bit;
+			auto propagate = lhs_bit ^ rhs_bit;
+			auto sum = propagate ^ carry;
+			carry =
+				(lhs_bit & rhs_bit) |
+				(carry & propagate);
+			lhs_bit = std::move(sum);
 		}
 		return *this;
 	}
@@ -687,10 +712,23 @@ struct int_tracker
 
 	constexpr self_type& self_sub_ret_carry(const self_type& rhs, bit_tracker& carry)
 	{
-		bit_tracker compliment_carry = false;
-		self_type one{1ull};
-		self_type rhs_compliment = (~rhs).self_add_ret_carry(one, compliment_carry);
-		return (self_add_ret_carry(rhs_compliment, carry));
+		// carry is an output: true means the unsigned subtraction did not
+		// underflow, matching the contract used by divmod().
+		bit_tracker borrow = false;
+		for (size_t i = 0; i < N; ++i)
+		{
+			auto& lhs_bit = bits[N - 1 - i];
+			const auto& rhs_bit = rhs.bits[N - 1 - i];
+
+			auto difference = lhs_bit ^ rhs_bit ^ borrow;
+			borrow =
+				((!lhs_bit) & (rhs_bit | borrow)) |
+				(rhs_bit & borrow);
+			lhs_bit = std::move(difference);
+		}
+
+		carry = !borrow;
+		return *this;
 	}
 
 	constexpr self_type& operator-=(const self_type& rhs)
