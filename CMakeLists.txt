@@ -20,6 +20,11 @@ target_compile_options(int_tracker_benchmark PRIVATE -Wall -Wextra -Wuninitializ
 include(CTest)
 
 if(BUILD_TESTING)
+    add_executable(buffered_object_pool_tests buffered_object_pool_tests.cpp)
+    target_compile_options(buffered_object_pool_tests PRIVATE -Wall -Wextra -Wuninitialized -pedantic)
+    add_test(NAME buffered_object_pool_tests COMMAND buffered_object_pool_tests)
+    set_tests_properties(buffered_object_pool_tests PROPERTIES TIMEOUT 10)
+
     add_executable(bitreverse_tests tests.cpp)
     target_compile_options(bitreverse_tests PRIVATE -Wall -Wextra -Wuninitialized -pedantic -fstack-protector-all -O3 -ggdb)
     add_test(NAME bitreverse_tests COMMAND bitreverse_tests)
@@ -38,6 +43,7 @@ if(BUILD_TESTING)
             "${CMAKE_CXX_COMPILER}"
             DIRECTORY)
         set_tests_properties(
+            buffered_object_pool_tests
             bitreverse_tests
             int_tracker_performance_regression
             PROPERTIES

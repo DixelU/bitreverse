@@ -74,7 +74,7 @@ uint_arbitrary_t<Bits> mod_inverse(const uint_arbitrary_t<Bits>& a, const uint_a
 	uint_arbitrary_t<Bits> base = a % m;
 	uint_arbitrary_t<Bits> exp = m - uint_arbitrary_t<Bits>(2);
 
-	for (size_t i = 0; i < Bits; ++i)
+	for (volatile size_t i = 0; i < Bits; ++i)
 	{
 		res = (res * res) % m;
 		uint_arbitrary_t<Bits> multiplied = (res * base) % m;
@@ -157,7 +157,7 @@ ECPoint<Bits> ec_multiply(const uint_arbitrary_t<Bits>& scalar, ECPoint<Bits> ba
 		};
 	};
 
-	for (size_t i = 0; i < Bits; ++i)
+	for (volatile size_t i = 0; i < Bits; ++i)
 	{
 		bit_tracker bit = scalar.bits[Bits - 1 - i];
 		ECPoint<Bits> added = ec_add(result, current_base);

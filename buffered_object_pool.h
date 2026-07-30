@@ -40,6 +40,8 @@ class buffered_object_pool
 
 	slab* slabs_ = nullptr;
 	slot* free_ = nullptr;
+	slot* next_unused_ = nullptr;
+	slot* unused_end_ = nullptr;
 	std::size_t slab_count_ = 0;
 	std::size_t live_count_ = 0;
 	std::size_t high_watermark_ = 0;
@@ -50,12 +52,8 @@ class buffered_object_pool
 		fresh->next = slabs_;
 		slabs_ = fresh;
 		++slab_count_;
-
-		for (slot& available : fresh->slots)
-		{
-			available.next = free_;
-			free_ = &available;
-		}
+		next_unused_ = fresh->slots;
+		unused_end_ = fresh->slots + slots_per_slab;
 	}
 
 public:
@@ -85,11 +83,18 @@ public:
 	template<typename... Args>
 	T* create(Args&&... args)
 	{
-		if (!free_)
-			add_slab();
-
-		slot* storage = free_;
-		free_ = storage->next;
+		slot* storage;
+		if (free_)
+		{
+			storage = free_;
+			free_ = storage->next;
+		}
+		else
+		{
+			if (next_unused_ == unused_end_)
+				add_slab();
+			storage = next_unused_++;
+		}
 
 		try
 		{

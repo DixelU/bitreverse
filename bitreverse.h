@@ -39,11 +39,11 @@ struct bitstate
 	counted_ptr<bitstate> _2{};
 
 #ifndef WITHOUT_DEPTH_TRACKING
-	size_t max_depth{0};
+	size_t max_depth : 56 {0};
 #endif
 
-	std::uint8_t state : 1 {0};
-	std::uint8_t operation : 7 {'='};
+	size_t state : 1 {0};
+	size_t operation : 7 {'='};
 };
 
 constexpr std::pair<bool, char> extract_value_and_operation(std::uint8_t opcode)
@@ -423,7 +423,7 @@ struct ref_handler
 
 	ref_t ref;
 
-	ref_handler(ref_t ref) : ref(ref) {};
+	constexpr ref_handler(ref_t ref) : ref(ref) {};
 
 	ref_handler(T&&) = delete;
 	ref_handler(const ref_handler&) = delete;
@@ -776,27 +776,62 @@ struct int_tracker
 
 	constexpr self_type divmod(const self_type& divisor, self_type& remainder) const
 	{
-		const self_type dividend = *this;
+		int_tracker<N + 1> partial_remainder{};
+		const int_tracker<N + 1> extended_divisor{divisor};
 		self_type quotient{};
-		remainder = self_type{};
 
-		for (size_t i = 0; i < N; ++i)
+		for (size_t dividend_bit = 0;
+			dividend_bit < N;
+			++dividend_bit)
 		{
-			remainder <<= 1;
-			remainder.bits[N - 1] = dividend.bits[i];
+			const auto was_negative = partial_remainder.bits[0];
+			partial_remainder <<= 1;
+			partial_remainder.bits[N] = bits[dividend_bit];
 
-			const self_type previous_remainder = remainder;
-			self_type trial = previous_remainder;
-			bit_tracker carry = false;
+			// A non-negative partial remainder subtracts the divisor; a
+			// negative one adds it. XOR supplies either D or ~D, and the
+			// initial carry supplies the +1 required for subtraction.
+			const auto invert_divisor = !was_negative;
+			auto carry = invert_divisor;
+			for (size_t offset = 0; offset <= N; ++offset)
+			{
+				const size_t i = N - offset;
+				auto operand =
+					extended_divisor.bits[i] ^ invert_divisor;
+				auto propagate =
+					partial_remainder.bits[i] ^ operand;
+				auto sum = propagate ^ carry;
+				carry =
+					(partial_remainder.bits[i] & operand) |
+					(carry & propagate);
+				partial_remainder.bits[i] = std::move(sum);
+			}
 
-			trial.self_sub_ret_carry(divisor, carry);
-			auto no_underflow = carry;
+			quotient.bits[dividend_bit] =
+				!partial_remainder.bits[0];
+		}
 
-			remainder = __execute_ternary_assign(
-				no_underflow,
-				trial,
-				previous_remainder);
-			quotient.bits[i] = no_underflow;
+		const auto is_negative = partial_remainder.bits[0];
+		if (is_negative.bit_state->operation == '=')
+		{
+			if (is_negative.bit_state->state)
+				partial_remainder += extended_divisor;
+			remainder = self_type{partial_remainder};
+		}
+		else
+		{
+			const auto corrected_remainder =
+				partial_remainder + extended_divisor;
+			for (size_t i = 0; i < N; ++i)
+			{
+				const auto& uncorrected =
+					partial_remainder.bits[i + 1];
+				remainder.bits[i] =
+					uncorrected ^
+					(is_negative &
+						(corrected_remainder.bits[i + 1] ^
+							uncorrected));
+			}
 		}
 
 		return quotient;

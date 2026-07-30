@@ -30,6 +30,32 @@ constexpr bool constexpr_boolean_operation_test()
 
 static_assert(constexpr_boolean_operation_test());
 
+template<size_t N>
+constexpr bool constexpr_matches(
+	const br::int_tracker<N>& value,
+	std::uintmax_t expected)
+{
+	for (size_t offset = 0; offset < N; ++offset)
+	{
+		const auto& bit = value.bits[N - offset - 1];
+		if (bit.bit_state->operation != '=' ||
+			bit.bit_state->state != (expected & 1))
+			return false;
+		expected >>= 1;
+	}
+	return expected == 0;
+}
+
+constexpr bool constexpr_division_test()
+{
+	const br::int_tracker<4> dividend{13};
+	const br::int_tracker<4> divisor{3};
+	return constexpr_matches(dividend / divisor, 4) &&
+		constexpr_matches(dividend % divisor, 1);
+}
+
+static_assert(constexpr_division_test());
+
 void require(bool condition, const char* message)
 {
 	if (!condition)
@@ -53,6 +79,23 @@ struct pool_probe
 	}
 
 	size_t value;
+};
+
+struct destruction_chain_node
+{
+	static inline size_t destroyed = 0;
+
+	explicit destruction_chain_node(
+		dixelu::counted_ptr<destruction_chain_node>&& next) :
+		next(std::move(next))
+	{}
+
+	~destruction_chain_node()
+	{
+		++destroyed;
+	}
+
+	dixelu::counted_ptr<destruction_chain_node> next;
 };
 
 void counted_ptr_pool_tests()
@@ -106,6 +149,34 @@ void counted_ptr_pool_tests()
 			pool_probe::live == 0 &&
 			pool_probe::destroyed == object_count + released_addresses.size(),
 		"counted_ptr pool must destroy each object exactly once");
+}
+
+void counted_ptr_iterative_destruction_test()
+{
+	constexpr size_t chain_length = 250000;
+	destruction_chain_node::destroyed = 0;
+	auto& pool =
+		dixelu::details::counted_control_block_pool<
+			destruction_chain_node>();
+	const auto initial_statistics = pool.get_statistics();
+
+	dixelu::counted_ptr<destruction_chain_node> chain;
+	for (size_t i = 0; i < chain_length; ++i)
+	{
+		chain =
+			dixelu::make_counted<destruction_chain_node>(
+				std::move(chain));
+	}
+
+	require(
+		pool.get_statistics().live ==
+			initial_statistics.live + chain_length,
+		"deep ownership chain construction lost nodes");
+	chain.reset();
+	require(
+		destruction_chain_node::destroyed == chain_length &&
+			pool.get_statistics().live == initial_statistics.live,
+		"deep ownership chain must be destroyed iteratively");
 }
 
 void expression_simplification_tests()
@@ -537,6 +608,27 @@ void multiplication_and_division_tests()
 		}
 	}
 
+	for (std::uint16_t dividend = 0;
+		dividend <= UINT8_MAX;
+		++dividend)
+	{
+		for (std::uint16_t divisor = 1;
+			divisor <= UINT8_MAX;
+			++divisor)
+		{
+			require(
+				is_same(
+					u8{dividend} / u8{divisor},
+					dividend / divisor),
+				"broken exhaustive division");
+			require(
+				is_same(
+					u8{dividend} % u8{divisor},
+					dividend % divisor),
+				"broken exhaustive remainder");
+		}
+	}
+
 	std::uint32_t random_state = 0x6d2b79f5;
 	for (size_t sample = 0; sample < 512; ++sample)
 	{
@@ -709,6 +801,7 @@ void md5_one_unknown_byte_reversal_test()
 int main()
 {
 	counted_ptr_pool_tests();
+	counted_ptr_iterative_destruction_test();
 	multiplication_and_division_tests();
 	expression_simplification_tests();
 	solver_regression_tests();

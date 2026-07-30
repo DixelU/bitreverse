@@ -81,6 +81,46 @@ br::int_tracker<N> branch_multiply(
 }
 
 template<std::size_t N>
+br::int_tracker<N> conditional_restore_divide(
+	const br::int_tracker<N>& dividend,
+	const br::int_tracker<N>& divisor)
+{
+	br::int_tracker<N> quotient{};
+	br::int_tracker<N> remainder{};
+
+	for (std::size_t i = 0; i < N; ++i)
+	{
+		remainder <<= 1;
+		remainder.bits[N - 1] = dividend.bits[i];
+
+		const auto previous_remainder = remainder;
+		auto trial = previous_remainder;
+		br::bit_tracker no_underflow = false;
+		trial.self_sub_ret_carry(divisor, no_underflow);
+
+		if (no_underflow.bit_state->operation == '=')
+		{
+			remainder =
+				no_underflow.bit_state->state
+					? std::move(trial)
+					: previous_remainder;
+		}
+		else
+		{
+			for (std::size_t bit = 0; bit < N; ++bit)
+				remainder.bits[bit] =
+					compact_select(
+						no_underflow,
+						trial.bits[bit],
+						previous_remainder.bits[bit]);
+		}
+		quotient.bits[i] = no_underflow;
+	}
+
+	return quotient;
+}
+
+template<std::size_t N>
 bool same_concrete_value(
 	const br::int_tracker<N>& lhs,
 	const br::int_tracker<N>& rhs)
@@ -145,10 +185,14 @@ int main()
 	const u32 a{0x9e3779b9u};
 	const u32 b{0x85ebca6bu};
 	const auto expected_product = a * b;
+	const auto expected_quotient = a / b;
 
 	if (!same_concrete_value(
 			branch_multiply(a, b),
-			expected_product))
+			expected_product) ||
+		!same_concrete_value(
+			conditional_restore_divide(a, b),
+			expected_quotient))
 		throw std::runtime_error(
 			"comparison prototype produced an invalid result");
 
@@ -164,6 +208,11 @@ int main()
 		5000,
 		[&] { return branch_multiply(a, b); });
 	benchmark("concrete divide", 5000, [&] { return a / b; });
+	benchmark(
+		"restore divide prototype",
+		5000,
+		[&] { return conditional_restore_divide(a, b); });
+	benchmark("concrete remainder", 5000, [&] { return a % b; });
 	benchmark("concrete shift", 100000, [&] { return a << 13; });
 
 	std::cout << "\n";
@@ -185,6 +234,27 @@ int main()
 		6296,
 		183,
 		[](const auto& x, const auto& y) { return x * y; });
+	symbolic_benchmark(
+		"symbolic divide",
+		500,
+		6141,
+		2143,
+		[](const auto& x, const auto& y) { return x / y; });
+	symbolic_benchmark(
+		"restore divide prototype",
+		500,
+		9678,
+		3042,
+		[](const auto& x, const auto& y)
+		{
+			return conditional_restore_divide(x, y);
+		});
+	symbolic_benchmark(
+		"symbolic remainder",
+		500,
+		6392,
+		2145,
+		[](const auto& x, const auto& y) { return x % y; });
 	symbolic_benchmark(
 		"symbolic variable shift",
 		20000,

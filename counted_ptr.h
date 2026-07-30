@@ -25,7 +25,11 @@ struct counted_control_block
 	{}
 
 	t_type _p;
-	std::size_t _c;
+	union
+	{
+		std::size_t _c;
+		counted_control_block* _next_pending;
+	};
 };
 
 namespace details
@@ -39,6 +43,50 @@ buffered_object_pool<counted_control_block<T>>& counted_control_block_pool()
 	static buffered_object_pool<counted_control_block<T>> pool;
 	return pool;
 }
+
+template<typename T>
+class counted_destruction_queue
+{
+	using block_type = counted_control_block<T>;
+
+	block_type* head_ = nullptr;
+	block_type* tail_ = nullptr;
+	bool draining_ = false;
+
+public:
+	constexpr counted_destruction_queue() = default;
+
+	void enqueue(block_type* block) noexcept
+	{
+		block->_next_pending = nullptr;
+		if (tail_)
+			tail_->_next_pending = block;
+		else
+			head_ = block;
+		tail_ = block;
+
+		if (draining_)
+			return;
+
+		draining_ = true;
+		while (head_)
+		{
+			block_type* current = head_;
+			head_ = current->_next_pending;
+			if (!head_)
+				tail_ = nullptr;
+
+			// Destroying T may release more counted_ptr<T> children. They
+			// append to this queue instead of recursing through the stack.
+			counted_control_block_pool<T>().destroy(current);
+		}
+		draining_ = false;
+	}
+};
+
+template<typename T>
+inline constinit counted_destruction_queue<T>
+	counted_destruction_queue_instance;
 
 } // namespace details
 
@@ -189,7 +237,8 @@ private:
 			}
 			else
 			{
-				details::counted_control_block_pool<t_type>().destroy(_base);
+				details::counted_destruction_queue_instance<t_type>.enqueue(
+					_base);
 			}
 		}
 
