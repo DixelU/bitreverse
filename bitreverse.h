@@ -665,13 +665,12 @@ struct int_tracker
 		return copy;
 	}
 
-	constexpr self_type& operator+=(const self_type& rhs)
+	constexpr self_type& self_add_ret_carry(ref_handler<self_type> rhs, bit_tracker& carry)
 	{
-		bit_tracker carry = false;
 		for (size_t i = 0; i < N; ++i)
 		{
 			auto& lhs_bit = bits[N - 1 - i];
-			auto& rhs_bit = rhs.bits[N - 1 - i];
+			auto& rhs_bit = rhs.ref.bits[N - 1 - i];
 
 			auto xor_bit = lhs_bit ^ rhs_bit ^ carry;
 			carry = (rhs_bit & carry & !lhs_bit) | (lhs_bit & (rhs_bit | carry));
@@ -680,10 +679,24 @@ struct int_tracker
 		return *this;
 	}
 
+	constexpr self_type& operator+=(const self_type& rhs)
+	{
+		bit_tracker carry = false;
+		return self_add_ret_carry(rhs, carry);
+	}
+
+	constexpr self_type& self_sub_ret_carry(const self_type& rhs, bit_tracker& carry)
+	{
+		bit_tracker compliment_carry = false;
+		self_type one{1ull};
+		self_type rhs_compliment = (~rhs).self_add_ret_carry(one, compliment_carry);
+		return (self_add_ret_carry(rhs_compliment, carry));
+	}
+
 	constexpr self_type& operator-=(const self_type& rhs)
 	{
-		auto rhs_complement = (~rhs) + 1;
-		return (*this += rhs_complement);
+		bit_tracker carry = false;
+		return self_sub_ret_carry(rhs, carry);
 	}
 
 	constexpr self_type operator+(const self_type& rhs) const
@@ -706,6 +719,69 @@ struct int_tracker
 		return rhs_complement;
 	}
 
+	constexpr self_type& operator*=(const self_type& rhs)
+	{
+		self_type result{};
+
+		for (size_t i = 0; i < N; ++i)
+		{
+			// or << (1ull << i) if you prefer
+			self_type shifted = *this << i;
+
+			result = __execute_ternary_assign(
+				rhs.bits[i],
+				result + shifted,
+				result);
+		}
+
+		return (*this = std::move(result));
+	}
+
+	constexpr self_type divmod(const self_type& divisor, self_type& remainder)
+	{
+		// Special-case zero divisor if you care; otherwise undefined behaviour is fine.
+		self_type quotient{};
+		remainder = *this;
+
+		for (size_t i = N; i-- > 0; )
+		{
+			// remainder = (remainder << 1) | bit_from_original, but we already
+			// have the whole value, so just shift the remainder left each step.
+			remainder <<= 1;
+
+			// try to subtract divisor
+			self_type remainder_copy = remainder;
+			bit_tracker carry = false;
+
+			self_type trial = remainder_copy.self_sub_ret_carry(divisor, carry);
+			auto no_underflow = !carry;
+
+			remainder = __execute_ternary_assign(no_underflow, trial, remainder);
+
+			quotient.bits[i] = no_underflow;
+		}
+
+		return quotient;
+	}
+
+	friend constexpr self_type operator*(self_type lhs, const self_type& rhs)
+	{
+		return lhs *= rhs;
+	}
+
+	friend constexpr self_type operator/(const self_type& lhs, const self_type& rhs)
+	{
+		self_type rem;
+		return self_type{lhs}.divmod(rhs, rem);
+	}
+
+	friend constexpr self_type operator%(const self_type& lhs, const self_type& rhs)
+	{
+		self_type rem;
+		auto div = self_type{lhs}.divmod(rhs, rem);
+		return rem;
+	}
+
 	[[nodiscard]] std::string __to_string() const
 	{
 		std::string str;
@@ -723,6 +799,11 @@ struct int_tracker
 			max_depth = std::max(max_depth, bit.bit_state->max_depth);
 #endif
 		return max_depth;
+	}
+
+	[[nodiscard]] static bit_tracker are_equal(const self_type& lhs, const self_type& rhs)
+	{
+		return lhs ^= rhs;
 	}
 };
 

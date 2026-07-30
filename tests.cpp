@@ -396,6 +396,30 @@ void exhaustive_gate_solver_tests()
 		"NOT=true truth table mismatch");
 }
 
+void multiplication_and_division_tests()
+{
+	using u32 = br::int_tracker<32>;
+
+	const auto is_same = [](const u32& rhs, const u32& lhs)
+	{
+		for (int i = 0; i < 32; ++i)
+		{
+			if (rhs.bits[i].bit_state->state != lhs.bits[i].bit_state->state)\
+				return false;
+		}
+		return true;
+	};
+
+	for (uint32_t i = 13089; i < 83939; ++i)
+	{
+		for (uint32_t j = 1; j < 16556; ++j)
+		{
+			require(is_same(u32{i} / u32{j}, i / j), "broken division");
+			require(is_same(u32{i} % u32{j}, i % j), "broken remainder");
+		}
+	}
+}
+
 template<template<size_t> typename int_tracker>
 int_tracker<32> tracked_crc32(const std::vector<int_tracker<8>>& message)
 {
@@ -546,6 +570,7 @@ void md5_one_unknown_byte_reversal_test()
 
 int main()
 {
+	multiplication_and_division_tests();
 	expression_simplification_tests();
 	solver_regression_tests();
 	exhaustive_gate_solver_tests();

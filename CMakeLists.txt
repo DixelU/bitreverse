@@ -11,6 +11,9 @@ target_compile_options(bitreverse PUBLIC -Wall -Wextra -Wuninitialized -pedantic
 add_executable(md5_reverse_demo md5_demo.cpp)
 target_compile_options(md5_reverse_demo PRIVATE -Wall -Wextra -Wuninitialized -pedantic -fstack-protector-all -O3 -ggdb)
 
+add_executable(mrev multiplication_reversal.cpp)
+target_compile_options(mrev PRIVATE -Wall -Wextra -Wuninitialized -pedantic -fstack-protector-all -O3 -ggdb)
+
 include(CTest)
 
 if(BUILD_TESTING)
