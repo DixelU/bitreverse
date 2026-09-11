@@ -4,10 +4,11 @@ The project now builds an exact inverse for bounded nonlinear circuits, saves
 it, and evaluates it without SAT or input search. It can also export a standalone
 C++ header containing a fixed schedule of Boolean conditionals.
 
-The first useful result is that **recovering an input and rejecting an impossible
-target can have very different costs**. For MD5 with three bytes fixed and one
-byte unknown, the input-selection functions use 786 decision nodes. Checking
-that the supplied digest belongs to that 256-message domain uses 28,971 more.
+The first useful result is that **input recovery and target validity can have
+very different representation sizes**. For MD5 with three bytes fixed and one
+byte unknown, the input-selection functions use 786 decision nodes. The saved
+validity predicate uses 28,971. These are storage counts, not lower bounds on
+query work; see the follow-up traversal measurement below.
 
 ## Measured sizes
 
@@ -66,6 +67,27 @@ GCC 15.2 at `-O2`. The final CMake/CTest run passed seven of eight checks,
 including the standalone export test. Kaspersky quarantined the CMake Release
 synthesis test executable before CTest could launch it; that check remains
 unrun in the final CTest build. Its detection log records the executable's path.
+
+## Follow-up: stored size versus work per query
+
+A read-only PowerShell traversal of the existing saved artifact followed only
+the branch selected by each target bit, separately for validity and each input
+selector. All 256 digests produced by .NET MD5 for `md5` plus one byte recovered
+that exact byte. This did not change the C++ implementation.
+
+| Targets | Validity path visits | Total visits for validity and eight selectors |
+|---|---:|---:|
+| All 256 reachable digests | 128 each | Mean 190.19; range 175–220 |
+| 32 deterministic invalid digests | Mean 9.03; range 6–12 | Mean 65.41 if selectors are also evaluated |
+| All-zero digest | 7 | 55 if selectors are also evaluated |
+
+The existing evaluator executes all 29,757 retained function nodes per query.
+For reachable targets, independent path traversal visits an average of 186.41
+distinct nodes; its 190.19 total includes repeated visits across roots. Checking
+validity first permits immediate rejection of invalid targets. These are node
+visit counts, **not** measured C++ speedups, and traversal does not shrink the
+saved graph. The proposed construction and evaluation experiments are in
+[EXPLORATION_PLAN.md](EXPLORATION_PLAN.md).
 
 ## Reproduce
 
