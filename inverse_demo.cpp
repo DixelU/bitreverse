@@ -31,15 +31,18 @@ void usage(std::ostream& out)
 		<< "                     [--max-nodes=N] [--max-operations=N]\n"
 		<< "  inverse_demo synthesize INPUT.bri OUTPUT.bri [--max-nodes=N]\n"
 		<< "                          [--max-operations=N]\n"
+		<< "  inverse_demo synthesize-selector INPUT.bri OUTPUT.bri [--max-assignments=N]\n"
+		<< "                                   [--max-nodes=N] [--max-operations=N] [--max-bytes=N]\n"
 		<< "  inverse_demo export-cpp INPUT.bri OUTPUT.h\n"
 		<< "  inverse_demo inspect FILE\n"
 		<< "  inverse_demo solve FILE TARGET_HEX [--limit=N|--all] [--output=FILE]\n"
 		<< "                     [--no-affine] [--conflict-learning]\n\n"
-		<< "HEX_PATTERN contains byte pairs (00..ff) or ?? for unknown bytes.\n"
+		<< "HEX_PATTERN contains hex digits and ? wildcards (one unknown nibble each).\n"
 		<< "Quote patterns in your shell. The message length and known bytes are baked in.\n"
 		<< "--printable requires every input byte to be ASCII 0x20..0x7e.\n"
 		<< "Synthesis compiles an exact inverse function; resource limits must be positive.\n"
-		<< "export-cpp writes a standalone canonical inverse from a synthesized file.\n"
+		<< "synthesize-selector enumerates a bounded domain and uses one forward check per query.\n"
+		<< "export-cpp writes a standalone canonical inverse from a synthesized or selector file.\n"
 		<< "TARGET_HEX is the ordinary CRC32 or MD5 hex digest, without a 0x prefix.\n"
 		<< "Solutions are complete input messages as hex, one per line on stdout.\n"
 		<< "The default limit is 1; --all or --limit=0 enumerates all matches.\n"
@@ -69,6 +72,23 @@ std::vector<br::itu8> parse_pattern(std::string_view pattern)
 	{
 		if (pattern.substr(offset, 2) == "??")
 			message.emplace_back(br::unknown);
+		else if (pattern[offset] == '?' || pattern[offset + 1] == '?')
+		{
+			br::itu8 byte{0};
+			for (size_t nibble = 0; nibble < 2; ++nibble)
+			{
+				const char digit = pattern[offset + nibble];
+				if (digit == '?')
+					for (size_t bit = 0; bit < 4; ++bit) byte.bits[nibble * 4 + bit] = br::unknown;
+				else
+				{
+					const auto value = hex_digit(digit);
+					for (size_t bit = 0; bit < 4; ++bit)
+						byte.bits[nibble * 4 + bit] = br::bit_tracker(((value >> (3 - bit)) & 1U) != 0);
+				}
+			}
+			message.push_back(std::move(byte));
+		}
 		else
 			message.emplace_back(
 				hex_digit(pattern[offset]) * 16 + hex_digit(pattern[offset + 1]));
@@ -118,7 +138,13 @@ void describe(const inv::program& program, std::ostream& out)
 		<< ", unknown bits: " << program.unknown_count()
 		<< ", output bits: " << program.output_count()
 		<< ", circuit nodes: " << program.node_count() << '\n';
-	if (program.is_synthesized())
+	if (program.is_selected())
+		out << "Inverse: compiled selector with forward validation; no query-time search\n"
+			<< "Selector nodes: " << program.selector_node_count()
+			<< "; leaves: " << program.selector_leaf_count()
+			<< "; retained input assignments: " << program.selector_assignment_count()
+			<< "; forward verifier nodes: " << program.selector_forward_node_count() << '\n';
+	else if (program.is_synthesized())
 		out << "Inverse: synthesized Boolean functions; no query-time search\n"
 			<< "Saved decision nodes: " << program.synthesized_node_count()
 			<< "; relation nodes: " << program.synthesized_relation_node_count()
@@ -172,15 +198,42 @@ bool parse_synthesis_option(std::string_view option, inv::synthesis_options& opt
 	return true;
 }
 
+void describe_synthesis(std::ostream& stream, const inv::synthesis_statistics& statistics)
+{
+	stream << "Synthesis build: "
+		<< std::chrono::duration<double>(statistics.elapsed).count() << " seconds, "
+		<< statistics.created_nodes << " created nodes, "
+		<< statistics.operations << " operations\n";
+	for (size_t index = 0; index < statistics.phases.size(); ++index)
+	{
+		const auto& phase = statistics.phases[index];
+		if (!phase.started) continue;
+		stream << "  " << inv::synthesis_phase_name(static_cast<inv::synthesis_phase>(index))
+			<< (phase.completed ? ": completed, " : ": failed, ")
+			<< std::chrono::duration<double, std::milli>(phase.elapsed).count() << " ms, "
+			<< phase.created_nodes << " created, " << phase.resident_nodes << " resident, ";
+		if (phase.completed) stream << phase.live_nodes;
+		else stream << "unavailable";
+		stream << " reachable from phase outputs, " << phase.peak_tracked_bytes << " peak tracked bytes\n";
+	}
+	stream << "Peak tracked builder allocation: " << statistics.peak_tracked_bytes
+		<< " bytes (excludes source/returned circuits and allocator overhead)\n";
+}
+
 inv::program synthesize_program(const inv::program& program,
 	const inv::synthesis_options& options)
 {
 	inv::synthesis_statistics statistics;
-	auto result = program.synthesized(options, &statistics);
-	std::cout << "Synthesis build: "
-		<< std::chrono::duration<double>(statistics.elapsed).count() << " seconds, "
-		<< statistics.created_nodes << " created nodes, "
-		<< statistics.operations << " operations\n";
+	const auto result = [&]
+	{
+		try { return program.synthesized(options, &statistics); }
+		catch (const inv::synthesis_limit&)
+		{
+			describe_synthesis(std::cerr, statistics);
+			throw;
+		}
+	}();
+	describe_synthesis(std::cout, statistics);
 	return result;
 }
 
@@ -219,13 +272,65 @@ int synthesize(int argc, char** argv)
 	return 0;
 }
 
+void describe_selector(std::ostream& stream, const inv::selector_statistics& statistics)
+{
+	stream << "Selector build: " << std::chrono::duration<double>(statistics.elapsed).count()
+		<< " seconds, " << statistics.domain_assignments << " domain assignments, "
+		<< statistics.allowed_assignments << " allowed, " << statistics.distinct_outputs
+		<< " distinct outputs, " << statistics.operations << " operations\n"
+		<< "  Forward enumeration: " << std::chrono::duration<double, std::milli>(statistics.enumeration_elapsed).count()
+		<< " ms; tree construction: " << std::chrono::duration<double, std::milli>(statistics.tree_elapsed).count()
+		<< " ms; exhaustive certification: " << std::chrono::duration<double, std::milli>(statistics.validation_elapsed).count()
+		<< " ms\nPeak tracked selector allocation: " << statistics.peak_bytes << " bytes\n";
+	if (statistics.failed_phase != "none") stream << "Failed phase: " << statistics.failed_phase << '\n';
+}
+
+int synthesize_selector(int argc, char** argv)
+{
+	if (argc < 4)
+		throw std::invalid_argument("synthesize-selector expects INPUT.bri OUTPUT.bri and optional resource limits");
+	inv::selector_options options;
+	for (int index = 4; index < argc; ++index)
+	{
+		const std::string_view argument(argv[index]);
+		const auto separator = argument.find('=');
+		const auto name = argument.substr(0, separator);
+		size_t* value = nullptr;
+		if (name == "--max-assignments") value = &options.max_assignments;
+		else if (name == "--max-nodes") value = &options.max_nodes;
+		else if (name == "--max-operations") value = &options.max_operations;
+		else if (name == "--max-bytes") value = &options.max_bytes;
+		if (!value || separator == std::string_view::npos)
+			throw std::invalid_argument("unknown selector option: " + std::string(argument));
+		*value = parse_limit(argument.substr(separator + 1), name);
+		if (!*value) throw std::invalid_argument(std::string(name) + " must be positive");
+	}
+	const auto source = read_program(argv[2]);
+	require_different_files(argv[2], argv[3]);
+	inv::selector_statistics statistics;
+	const auto program = [&]
+	{
+		try { return source.selected(options, &statistics); }
+		catch (const inv::selector_limit&)
+		{
+			describe_selector(std::cerr, statistics);
+			throw;
+		}
+	}();
+	describe_selector(std::cout, statistics);
+	save_program(program, argv[3]);
+	std::cout << "Saved compiled selector: " << argv[3] << '\n';
+	describe(program, std::cout);
+	return 0;
+}
+
 int export_cpp(int argc, char** argv)
 {
 	if (argc != 4)
 		throw std::invalid_argument("export-cpp expects INPUT.bri OUTPUT.h");
 	const auto program = read_program(argv[2]);
-	if (!program.is_synthesized())
-		throw std::invalid_argument("export-cpp requires a synthesized inverse; run synthesize first");
+	if (!program.is_synthesized() && !program.is_selected())
+		throw std::invalid_argument("export-cpp requires a synthesized inverse or compiled selector");
 	require_different_files(argv[2], argv[3]);
 	std::ostringstream generated;
 	program.export_cpp(generated);
@@ -375,7 +480,7 @@ int main(int argc, char** argv)
 			return 0;
 		}
 		if (argc < 2)
-			throw std::invalid_argument("expected build, synthesize, export-cpp, inspect, or solve");
+			throw std::invalid_argument("expected build, synthesize, synthesize-selector, export-cpp, inspect, or solve");
 		const std::string_view command(argv[1]);
 		if (command == "build")
 			return build(argc, argv);
@@ -383,6 +488,8 @@ int main(int argc, char** argv)
 			return solve(argc, argv);
 		if (command == "synthesize")
 			return synthesize(argc, argv);
+		if (command == "synthesize-selector")
+			return synthesize_selector(argc, argv);
 		if (command == "export-cpp")
 			return export_cpp(argc, argv);
 		if (command == "inspect")

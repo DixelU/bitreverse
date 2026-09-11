@@ -10,6 +10,7 @@
 #include "bitreverse.h"
 #include "inverse/affine_plan.h"
 #include "inverse/synthesized_plan.h"
+#include "inverse/selector_plan.h"
 
 namespace dixelu::bitreverse::inversion
 {
@@ -50,6 +51,7 @@ class program
 	std::vector<size_t> input_columns_;
 	std::optional<detail::affine_plan> affine_;
 	std::optional<detail::synthesized_plan> synthesized_;
+	std::optional<detail::selector_plan> selected_;
 
 	program() = default;
 
@@ -247,6 +249,7 @@ public:
 	size_t node_count() const { return circuit_->nodes.size(); }
 	bool is_affine() const { return affine_.has_value(); }
 	bool is_synthesized() const { return synthesized_.has_value(); }
+	bool is_selected() const { return selected_.has_value(); }
 
 	// All expensive reasoning occurs here. Failure leaves this program intact.
 	// Explicit synthesis never silently falls back to query-time search.
@@ -258,7 +261,43 @@ public:
 		program result = *this;
 		result.synthesized_ = std::move(plan);
 		result.affine_.reset();
+		result.selected_.reset();
 		return result;
+	}
+
+	// Exhaustively compile the bounded input domain into a selector tree.
+	// Targets are checked with one forward evaluation; no image BDD is built.
+	program selected(const selector_options& options = {},
+		selector_statistics* statistics = nullptr) const
+	{
+		auto plan = detail::selector_plan::compile(
+			*circuit_, outputs_, variables_, requirements_, options, statistics);
+		program result = *this;
+		result.selected_ = std::move(plan);
+		result.affine_.reset();
+		result.synthesized_.reset();
+		return result;
+	}
+
+	size_t selector_node_count() const
+	{
+		if (!selected_) throw std::logic_error("program has no compiled selector");
+		return selected_->node_count();
+	}
+	size_t selector_leaf_count() const
+	{
+		if (!selected_) throw std::logic_error("program has no compiled selector");
+		return selected_->leaf_count();
+	}
+	size_t selector_assignment_count() const
+	{
+		if (!selected_) throw std::logic_error("program has no compiled selector");
+		return selected_->assignment_count();
+	}
+	size_t selector_forward_node_count() const
+	{
+		if (!selected_) throw std::logic_error("program has no compiled selector");
+		return selected_->forward_node_count();
 	}
 
 	size_t synthesized_node_count() const
@@ -300,13 +339,14 @@ public:
 	// header has no dependency on tracking, decision-diagram construction, or SAT.
 	void export_cpp(std::ostream& stream) const
 	{
-		if (!synthesized_)
+		if (!synthesized_ && !selected_)
 			throw std::logic_error("synthesize the inverse before exporting C++");
 		values constants;
 		constants.reserve(inputs_.size());
 		for (const size_t id : inputs_)
 			constants.push_back(circuit_->nodes[id]->state != 0);
-		synthesized_->export_cpp(stream, input_columns_, constants);
+		if (selected_) selected_->export_cpp(stream, input_columns_, constants);
+		else synthesized_->export_cpp(stream, input_columns_, constants);
 	}
 
 	size_t free_bit_count() const
@@ -319,6 +359,12 @@ public:
 	std::optional<values> evaluate(const values& target, const values& free_bits) const
 	{
 		check_target(target);
+		if (selected_)
+		{
+			if (!free_bits.empty())
+				throw std::invalid_argument("selector evaluate selects one input; use solve to enumerate");
+			return evaluate_selected(target);
+		}
 		if (synthesized_)
 		{
 			if (!free_bits.empty())
@@ -338,6 +384,40 @@ public:
 		return full_input(*assignment);
 	}
 
+	// Selector queries report tree visits and the single forward verification pass.
+	std::optional<values> evaluate_selected(const values& target,
+		selector_evaluation_statistics* statistics = nullptr) const
+	{
+		if (statistics) *statistics = {};
+		check_target(target);
+		if (!selected_) throw std::logic_error("selector evaluation requires a compiled selector");
+		const auto assignment = selected_->evaluate(target, statistics);
+		if (!assignment) return std::nullopt;
+		return full_input(*assignment);
+	}
+
+	std::optional<values> evaluate_profiled(const values& target,
+		evaluation_statistics* statistics) const
+	{
+		if (statistics) *statistics = {};
+		check_target(target);
+		if (!synthesized_) throw std::logic_error("evaluation profiling requires a synthesized inverse");
+		const auto assignment = synthesized_->evaluate(target, statistics);
+		if (!assignment) return std::nullopt;
+		return full_input(*assignment);
+	}
+
+	std::optional<values> evaluate_schedule(const values& target,
+		evaluation_statistics* statistics = nullptr) const
+	{
+		if (statistics) *statistics = {};
+		check_target(target);
+		if (!synthesized_) throw std::logic_error("schedule evaluation requires a synthesized inverse");
+		const auto assignment = synthesized_->evaluate_schedule(target, statistics);
+		if (!assignment) return std::nullopt;
+		return full_input(*assignment);
+	}
+
 	// Zero max_solutions means exhaustive enumeration. Returning false stops early.
 	// Unlike assert_equality, an impossible target returns zero, not an exception.
 	size_t solve(const values& target,
@@ -348,6 +428,24 @@ public:
 		check_target(target);
 		if (!callback)
 			throw std::invalid_argument("inverse requires a solution callback");
+		if (selected_)
+		{
+			const auto started = std::chrono::steady_clock::now();
+			if (statistics)
+			{
+				statistics->reset();
+				statistics->nodes = selected_->node_count() + selected_->forward_node_count();
+				statistics->variables = unknown_count();
+			}
+			const size_t count = selected_->enumerate(target,
+				[&](const values& assignment) { return callback(full_input(assignment)); }, max_solutions);
+			if (statistics)
+			{
+				statistics->solutions = count;
+				statistics->elapsed = std::chrono::steady_clock::now() - started;
+			}
+			return count;
+		}
 		if (synthesized_)
 		{
 			const auto started = std::chrono::steady_clock::now();
@@ -448,8 +546,10 @@ private:
 				write_size(stream, id);
 			stream.put('\n');
 		}
-		stream << (synthesized_ ? "SYNTHESIZED\n" : affine_ ? "AFFINE\n" : "SEARCH\n");
-		if (synthesized_)
+		stream << (selected_ ? "SELECTOR\n" : synthesized_ ? "SYNTHESIZED\n" : affine_ ? "AFFINE\n" : "SEARCH\n");
+		if (selected_)
+			selected_->save(stream);
+		else if (synthesized_)
 			synthesized_->save(stream);
 		else if (affine_)
 			affine_->save(stream);
@@ -585,7 +685,15 @@ public:
 		std::string backend;
 		if (!(stream >> backend))
 			throw std::invalid_argument("missing inverse backend");
-		if (backend == "SYNTHESIZED")
+		if (backend == "SELECTOR")
+		{
+			result.selected_ = detail::selector_plan::load(stream,
+				*result.circuit_, result.outputs_, result.variables_, result.requirements_);
+			if (result.selected_->input_count() != result.unknown_count() ||
+				result.selected_->output_count() != output_size)
+				throw std::invalid_argument("selector dimensions do not match its ports");
+		}
+		else if (backend == "SYNTHESIZED")
 		{
 			result.synthesized_ = detail::synthesized_plan::load(stream);
 			if (result.synthesized_->input_count() != result.unknown_count() ||

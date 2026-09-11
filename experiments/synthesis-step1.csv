@@ -1,0 +1,67 @@
+# Reusable inverse synthesis: build once, save/load, then evaluate new outputs.
+# DD nodes are Boolean multiplexers, not the same cost unit as forward gates.
+# Saved DD total is the shared union of relation and canonical functions; artifact bytes also include the forward graph.
+# The first 17 columns retain the original schema; ns_per_query now measures lazy checked evaluation.
+# Lazy/schedule timings both include target validation and consume every recovered bit; visit profiling is untimed.
+# Selector and validity counts are separate reachable subsets, which may share nodes.
+# Invalid targets combine zero, seeded random targets and one-bit mutations, verified against the entire native image.
+# Native forward: scalar fixed-four-byte MD5 / one-byte CRC32, same executable and flags, all output words consumed.
+# Native timing excludes bitvector conversion; inverse timing includes the allocating vector-based public API.
+# Forward construction and native target generation are outside build/query timing; affine is already factorized.
+# Phase tracked bytes count builder PMR allocation requests, not process RSS; source/saved circuits and allocator overhead excluded.
+# Phase live nodes are reachable from phase outputs and are meaningful only for completed phases; peak includes transient data.
+# phase,case,phase,started,completed,elapsed_ms,created_nodes,operations,resident_nodes,live_nodes,tracked_bytes,peak_tracked_bytes
+# Limits report no completed inverse. Timings are measurements, not performance assertions.
+case,unknown_bits,output_bits,forward_nodes,created_DD_nodes,saved_DD_nodes,relation_DD_nodes,function_DD_nodes,selector_DD_nodes,validity_DD_nodes,build_ms,artifact_bytes,ns_per_query,operations,max_nodes,max_operations,status,invalid_ns_per_query,schedule_valid_ns_per_query,schedule_invalid_ns_per_query,valid_node_visits,invalid_node_visits,native_forward_ns_per_query,valid_samples,invalid_samples,failed_phase,peak_tracked_bytes
+toffoli3,3,3,5,37,27,21,6,6,0,0.055,412,65.720,582,750000,10000000,ok,NA,94.635,NA,4.500,NA,NA,8,0,none,8101
+# phase,toffoli3,forward,1,1,0.016,7,37,7,6,1293,1389
+# phase,toffoli3,relation,1,1,0.017,24,120,31,21,6045,6725
+# phase,toffoli3,witness,1,1,0.005,6,133,37,27,7789,7813
+# phase,toffoli3,compaction,1,1,0.005,0,292,37,27,8101,8101
+multiply3_4,4,4,13,97,60,45,15,15,0,0.054,778,74.631,1418,750000,10000000,ok,NA,106.430,NA,9.250,NA,NA,16,0,none,19237
+# phase,multiply3_4,forward,1,1,0.006,20,131,20,15,3565,3565
+# phase,multiply3_4,relation,1,1,0.019,62,281,82,45,14493,14509
+# phase,multiply3_4,witness,1,1,0.011,15,354,97,60,18445,18461
+# phase,multiply3_4,compaction,1,1,0.008,0,652,97,60,19237,19237
+square_4,4,4,59,86,28,18,10,5,5,0.045,998,71.045,1219,750000,10000000,ok,3.937,103.424,34.592,7.000,2.333,NA,16,12,none,18291
+# phase,square_4,forward,1,1,0.019,62,583,62,7,12491,12579
+# phase,square_4,relation,1,1,0.007,14,87,76,18,15827,15827
+# phase,square_4,witness,1,1,0.009,10,147,86,28,17587,17587
+# phase,square_4,compaction,1,1,0.003,0,402,86,28,18291,18291
+multiply3_8,8,8,37,1499,838,765,73,73,0,0.609,8668,126.450,27066,750000,10000000,ok,NA,173.248,NA,33.891,NA,NA,256,0,none,340093
+# phase,multiply3_8,forward,1,1,0.045,150,677,150,73,26085,26085
+# phase,multiply3_8,relation,1,1,0.325,1276,6447,1426,765,258869,258869
+# phase,multiply3_8,witness,1,1,0.096,73,10982,1499,838,328085,328093
+# phase,multiply3_8,compaction,1,1,0.029,0,8960,1499,838,340093,340093
+square_8,8,8,289,1634,284,236,48,38,13,0.527,6268,104.172,15866,750000,10000000,ok,5.295,144.836,59.525,22.688,3.046,NA,256,151,none,307001
+# phase,square_8,forward,1,1,0.326,1263,6706,1263,49,237265,237265
+# phase,square_8,relation,1,1,0.059,323,1728,1586,236,278649,278649
+# phase,square_8,witness,1,1,0.025,48,2101,1634,284,293913,293921
+# phase,square_8,compaction,1,1,0.021,0,5331,1634,284,307001,307001
+crc32_8_affine,8,32,102,0,NA,NA,NA,NA,NA,0.000,1694,218.262,0,750000,10000000,ok,154.510,NA,NA,NA,NA,2.991,256,256,none,0
+crc32_8_synthesized,8,32,102,12461,11814,6909,4905,44,4861,7.479,132001,229.980,390675,750000,10000000,ok,33.051,5193.904,3629.131,65.000,13.918,2.945,256,256,none,3914582
+# phase,crc32_8_synthesized,forward,1,1,0.051,173,1383,173,103,37110,37110
+# phase,crc32_8_synthesized,relation,1,1,3.842,7383,99873,7556,6909,2418022,2418022
+# phase,crc32_8_synthesized,witness,1,1,1.848,4905,176870,12461,11814,3814878,3814886
+# phase,crc32_8_synthesized,compaction,1,1,0.326,0,112549,12461,11814,3914582,3914582
+md5_4,4,128,31598,23901,3986,2011,1975,41,1934,17.495,559827,521.866,478415,750000,10000000,ok,95.596,2341.535,1713.243,144.938,34.484,90.561,16,256,none,7263358
+# phase,md5_4,forward,1,1,13.093,19867,346311,19867,292,6181982,6181982
+# phase,md5_4,relation,1,1,1.176,2059,24557,21926,2011,6782622,6782622
+# phase,md5_4,witness,1,1,0.501,1975,29844,23901,3986,7072134,7072134
+# phase,md5_4,compaction,1,1,0.137,0,77703,23901,3986,7263358,7263358
+md5_8,8,128,31650,574537,61024,31267,29757,786,28971,1049.392,1252779,710.052,6884112,750000,10000000,ok,100.998,30838.068,21771.875,190.191,36.578,90.302,256,256,none,110928642
+# phase,md5_8,forward,1,1,790.874,511116,3346055,511116,4186,69982130,88366314
+# phase,md5_8,relation,1,1,90.921,33664,1097498,544780,31267,100845906,101951906
+# phase,md5_8,witness,1,1,19.748,29757,834536,574537,61024,106332330,106332338
+# phase,md5_8,compaction,1,1,2.778,0,1606023,574537,61024,110928642,110928642
+md5_10,10,128,32035,750000,NA,NA,NA,NA,NA,1320.243,NA,NA,4612619,750000,10000000,limit,NA,NA,NA,NA,NA,90.134,256,256,forward,121435323
+# phase,md5_10,forward,1,0,1222.457,750000,4612619,750000,0,84815392,121435323
+# phase,md5_10,relation,0,0,0.000,0,0,0,0,0,0
+# phase,md5_10,witness,0,0,0.000,0,0,0,0,0,0
+# phase,md5_10,compaction,0,0,0.000,0,0,0,0,0,0
+md5_12,12,128,32057,750000,NA,NA,NA,NA,NA,1256.566,NA,NA,4450664,750000,10000000,limit,NA,NA,NA,NA,NA,89.081,256,256,forward,119658977
+# phase,md5_12,forward,1,0,1088.990,750000,4450664,750000,0,118754416,119658977
+# phase,md5_12,relation,0,0,0.000,0,0,0,0,0,0
+# phase,md5_12,witness,0,0,0.000,0,0,0,0,0,0
+# phase,md5_12,compaction,0,0,0.000,0,0,0,0,0,0
+# consumed=12221801160820573120

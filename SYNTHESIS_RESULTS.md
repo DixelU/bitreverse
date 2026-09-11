@@ -2,7 +2,9 @@
 
 The project now builds an exact inverse for bounded nonlinear circuits, saves
 it, and evaluates it without SAT or input search. It can also export a standalone
-C++ header containing a fixed schedule of Boolean conditionals.
+C++ header containing Boolean decision graphs evaluated along the supplied
+target's paths. The initial measurements below used the full schedule evaluator;
+the implemented first-step results appear after the traversal experiment.
 
 The first useful result is that **input recovery and target validity can have
 very different representation sizes**. For MD5 with three bytes fixed and one
@@ -81,13 +83,74 @@ that exact byte. This did not change the C++ implementation.
 | 32 deterministic invalid digests | Mean 9.03; range 6–12 | Mean 65.41 if selectors are also evaluated |
 | All-zero digest | 7 | 55 if selectors are also evaluated |
 
-The existing evaluator executes all 29,757 retained function nodes per query.
+The original evaluator executes all 29,757 retained function nodes per query.
 For reachable targets, independent path traversal visits an average of 186.41
 distinct nodes; its 190.19 total includes repeated visits across roots. Checking
 validity first permits immediate rejection of invalid targets. These are node
 visit counts, **not** measured C++ speedups, and traversal does not shrink the
 saved graph. The proposed construction and evaluation experiments are in
 [EXPLORATION_PLAN.md](EXPLORATION_PLAN.md).
+
+## Step 1 implemented: evaluation and construction profiling
+
+The default API and exported C++ now evaluate validity first and follow only
+target-selected branches. The full schedule remains available as a benchmark
+baseline. No input search is involved in either evaluator. All eight CTest
+checks passed in the new build, including exhaustive synthesis tests and
+compilation/execution of the standalone exported header. The earlier quarantine
+issue did not recur in this run.
+
+Measurements from GCC 15.2, Release, in the same benchmark executable:
+
+| Specialized inverse | Valid query, lazy | Valid query, schedule | Invalid query, lazy | Invalid query, schedule |
+|---|---:|---:|---:|---:|
+| MD5, 4 unknown bits | 0.522 us | 2.342 us | 0.096 us | 1.713 us |
+| MD5, 8 unknown bits | 0.710 us | 30.838 us | 0.101 us | 21.772 us |
+| CRC32, 8 unknown bits | 0.230 us | 5.194 us | 0.033 us | 3.629 us |
+
+The eight-bit MD5 case improves by approximately 43 times for valid queries in
+this run. Its mean lazy visit count remains 190.191. The invalid pool now mixes
+zero, random digests, and near misses produced by single-bit changes; its mean
+is 36.578 visits, so it is a different workload from the earlier random-only
+traversal sample. Every invalid target is checked against the complete native
+forward image before timing. All 256 byte-domain inputs recover correctly after
+save/load, and lazy, scheduled, and profiled results agree.
+
+Native scalar four-byte MD5 measured 0.090 us per forward pass. That baseline
+uses packed integers and excludes bitvector conversions, while the inverse
+timings include its allocating public API and consuming all returned bits.
+It provides practical context, not an equal-representation circuit comparison.
+The existing affine CRC32 backend measured 0.218 us for valid queries.
+
+For the eight-bit MD5 build:
+
+| Construction phase | Phase time | Nodes created in phase | Nodes reachable from phase outputs | Peak tracked allocation |
+|---|---:|---:|---:|---:|
+| Forward conversion | 790.9 ms | 511,116 | 4,186 | 88.37 MB |
+| Relation construction | 90.9 ms | 33,664 | 31,267 | 101.95 MB |
+| Witness extraction | 19.7 ms | 29,757 | 61,024 including saved relation | 106.33 MB |
+| Compaction | 2.8 ms | 0 | 61,024 | 110.93 MB |
+
+End-to-end synthesis measured 1.049 seconds, including cleanup and construction
+of the returned program. Phase times exclude boundary reachability scans;
+the overall statistics include those scans. MB denotes decimal megabytes.
+Tracked allocation counts bytes requested by the instrumented builder
+containers; it excludes process/allocator overhead, the input and returned
+circuits, control objects, and reachability/indexing scratch. The recorded peaks
+are not process RSS. Reachable counts describe phase outputs, even while caches
+and intermediate graphs remain allocated.
+
+**Both the 10-bit and 12-bit MD5 cases fail during forward conversion at 750,000
+created nodes. Neither reaches relation construction.** Their end-to-end times
+were 1.320 and 1.257 seconds. This localizes the immediate construction limit to
+the representation of intermediate forward computations. It does not establish
+a lower bound on the final inverse.
+
+The eight-bit saved artifact remains byte-for-byte identical to the earlier
+artifact (SHA-256 checked), so the new evaluator also benefits existing saved
+programs. The next experiment is to construct selectors without materializing
+every forward-gate decision diagram, then validate candidates with the forward
+algorithm. [Raw benchmark output](experiments/synthesis-step1.csv).
 
 ## Reproduce
 

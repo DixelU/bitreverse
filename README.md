@@ -15,7 +15,7 @@ An inverse can return several matching inputs, or none. A matching input is a
 preimage; it need not be the original input. This matters for checksums and hashes,
 where different inputs can have the same output.
 
-## Three paths to an inverse
+## Four paths to an inverse
 
 For an affine bit relation, compilation performs elimination over GF(2) and
 constructs a direct inverse family. At runtime the target output and a choice of
@@ -39,6 +39,14 @@ saved relation; the exported function selects one of them.
 
 See [the first synthesis experiments](SYNTHESIS_RESULTS.md) for measured nonlinear
 and MD5 results, including separate sizes for input recovery and target validation.
+
+For a bounded nonlinear domain, a **compiled selector with forward validation**
+provides another construction path. It enumerates concrete forward evaluations
+64 assignments at a time, builds a target-bit tree, and retains groups of matching
+inputs. Each query selects an input and verifies it with one forward pass. It
+avoids intermediate and relation BDDs, while retaining exponential enumeration
+and storage costs. [Step 2 measurements](SELECTOR_RESULTS.md) reach 20 unknown MD5
+bits and compare this approach with native tables and the BDD backend.
 
 Without explicit synthesis, nonlinear relations are saved as reusable Boolean
 circuits and use the existing solver for each new target. This is the default
@@ -139,10 +147,15 @@ overlap. It also separates the input selectors from the reachable-target check:
 rejecting invalid outputs can cost much more than selecting an input when the
 output is known to be reachable. A BDD node is a Boolean conditional, not one primitive AND/XOR gate, so
 these counts are not directly comparable to the forward circuit's gate count.
-Canonical evaluation executes the retained function graph; enumerating every
-preimage additionally costs at least the number of results emitted.
+Canonical evaluation follows the target-selected path through the validity
+function first, then through each input selector. Invalid targets return before
+any selectors are evaluated. The generated C++ uses the same traversal, with
+no graph-sized query buffer. Enumerating every preimage additionally costs at
+least the number of results emitted.
 
-`HEX_PATTERN` consists of known byte pairs such as `6d` and unknown pairs `??`.
+`HEX_PATTERN` consists of hex digits and `?` wildcards, one unknown nibble each.
+For example, `6d64????` fixes two bytes, and `6d6?????` fixes one byte and one
+nibble. `??` continues to mean an entirely unknown byte.
 Quote it to avoid shell wildcard expansion. Message length, known bytes, hash
 constants, and `--printable` restrictions are baked at build time. `--printable`
 means bytes `0x20` through `0x7e`, inclusive. To change a baked value or the input
@@ -254,7 +267,50 @@ sizes are available through `synthesized_node_count()`,
 `synthesized_relation_node_count()`, and `synthesized_function_node_count()`.
 Use `synthesized_selector_node_count()` and `synthesized_validity_node_count()`
 to separate input recovery from target validation.
-`export_cpp` requires a synthesized program.
+`export_cpp` requires a synthesized program or compiled selector.
+
+For a compiled selector, use `program::selected(selector_options, &statistics)`
+instead of `synthesized`. `is_selected()` identifies this backend. `evaluate`
+requires empty free bits; `solve` retains all preimages; and `export_cpp` emits
+the canonical selector plus forward check with no project dependencies.
+The CLI command is `synthesize-selector INPUT.bri OUTPUT.bri`, accepting positive
+`--max-assignments`, `--max-nodes`, `--max-operations`, and `--max-bytes` limits.
+See [the selector experiment](SELECTOR_RESULTS.md) for defaults, hard limits,
+certification, and measured tradeoffs. Failed construction leaves its source
+and existing destination intact.
+
+`selector_statistics` separates enumeration, tree construction, and exhaustive
+tree certification time, and records domain/allowed assignment counts, distinct
+outputs, work, and peak tracked allocation. `evaluate_selected(target, &visits)`
+reports `selector_evaluation_statistics` containing `decision_visits` and
+`forward_gate_evaluations`. `selector_node_count()`, `selector_leaf_count()`,
+`selector_assignment_count()`, and `selector_forward_node_count()` describe the
+compiled representation. Check `is_selected()` before applying backend-specific
+BDD or affine statistics methods.
+
+Construction statistics also contain `phases` for `forward`, `relation`,
+`witness`, and `compaction`, with elapsed time, created/resident nodes, and nodes
+reachable from completed phase outputs. `failed_phase` identifies an interrupted
+build; later phases remain unstarted. Reachable counts are unavailable for an
+incomplete phase. These counts exclude unused cached/intermediate nodes and do
+not imply those nodes have already been freed.
+
+`peak_tracked_bytes` measures allocation requests for the builder's tracked
+diagram, cache, and work-vector containers. It is not process RSS: it excludes
+allocator overhead, source and returned circuits, recursion/function control
+objects, and reachability/indexing scratch. A failed phase's `tracked_bytes`
+snapshot is taken after temporary containers unwind; its peak still includes
+their earlier allocations. `profiling_elapsed` records phase-boundary
+reachability scans and is included in overall `elapsed`. Caller wall time also
+includes builder cleanup and the returned program's construction.
+
+For evaluation comparisons, `evaluate_profiled(target, &statistics)` reports
+`evaluation_statistics` with `decision_visits`, `validity_visits`, and
+`selector_visits`. Visits count actual traversals, including shared nodes visited
+from several roots. `evaluate_schedule(target, &statistics)` retains the original
+full-graph baseline: each combined node counts once, with shared validity nodes
+charged to validity. Both methods require a synthesized program and return the
+same canonical full input as `evaluate(target, {})`.
 
 `solve` can also take `solver_options` and a `solver_statistics*` after the result
 limit; solver settings apply only to the search backend. Forward program size

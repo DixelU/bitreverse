@@ -8,6 +8,17 @@ decision diagrams and simple tables as the unknown domain grows.
 This is a proposal for the next experiments. The existing prototype and its
 measurements are described in [SYNTHESIS_RESULTS.md](SYNTHESIS_RESULTS.md).
 
+**Progress:** the first two implementation steps are complete. Lazy evaluation and
+construction profiling are implemented. Checked
+one-byte MD5 queries measured 0.71 microseconds versus 30.84 for the retained
+schedule baseline. Both 10- and 12-bit MD5 builds stop during forward conversion,
+before relation construction. The candidate-plus-forward-check backend now
+builds the 20-bit MD5 domain in 3.86 seconds and passes independent verification
+of all 1,048,576 inputs after serialization/reload. It still enumerates the domain
+and stores a large tree. The current suite has ten passing checks.
+[Step 2 details](SELECTOR_RESULTS.md). Next is counterexample-guided synthesis
+without full-domain enumeration.
+
 ## What we are trying to establish
 
 Keep three questions separate:
@@ -36,7 +47,7 @@ could occur before the full relation is even built.
 
 Compare three evaluators on exactly the same artifact:
 
-- The current full topological schedule.
+- The original full topological schedule, retained as a baseline.
 - Per-root traversal following the supplied target bits, with optional sharing
   of already evaluated nodes.
 - Input selectors followed by a forward check.
@@ -50,7 +61,7 @@ compiler settings.
 
 A read-only follow-up already confirms the opportunity: all 256 reachable MD5
 targets recover correctly with a mean of 190.19 path visits across the validity
-root and eight selectors, versus 29,757 evaluations in the current schedule.
+root and eight selectors, versus 29,757 evaluations in the original schedule.
 The validity path alone takes 128 visits for reachable targets and a mean of
 9.03 for 32 deterministic invalid targets. This is a structural operation
 count, not a C++ timing result.

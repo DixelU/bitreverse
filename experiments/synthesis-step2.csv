@@ -1,0 +1,12 @@
+# Exact bounded-domain selector plus forward-check baseline; no decision-diagram relation.
+# Every native domain digest is validated after save/load, outside query timing; random/near invalid targets are independently absent.
+# Candidate query timings use the allocating vector<bool> API and consume every recovered input bit.
+# Native forward and sorted-table lookup use uint32_t words, same build flags, no bitvector conversion; all output words consumed.
+# Table build includes independent native digest generation and sorting; payload bytes include table_entry padding but exclude allocator metadata.
+# Domain enumeration is exponential in unknown bits: successful bounded synthesis alone does not establish structural compression.
+case,unknown_bits,forward_nodes,domain_rows,build_ms,selector_nodes,selector_leaves,artifact_bytes,valid_ns,random_invalid_ns,near_invalid_ns,native_forward_ns,table_build_ms,table_payload_bytes,table_valid_ns,table_random_invalid_ns,table_near_invalid_ns,exhaustive_validation_ms,status,enumeration_ms,tree_ms,certificate_validation_ms,domain_assignments,allowed_assignments,distinct_outputs,operations,peak_bytes,valid_decision_visits,random_decision_visits,near_decision_visits,valid_forward_gates,random_forward_gates,near_forward_gates
+md5_8,8,31650,256,1.039,511,256,523741,29305.398,29578.125,29477.983,86.609,0.037,5120,8.911,7.782,8.011,22.773,ok,0.979,0.046,0.004,256,256,256,309937,878770,8.000,8.000,8.000,31648.000,31648.000,31648.000
+md5_10,10,32035,1024,2.322,2047,1024,551112,30005.208,29949.405,30397.321,86.166,0.124,20480,9.445,9.430,8.865,46.759,ok,2.088,0.211,0.022,1024,1024,1024,976730,882235,10.000,10.000,10.000,32033.000,32033.000,32033.000
+md5_12,12,32057,4096,6.290,8191,4096,644238,27875.679,28732.244,28103.940,89.050,0.540,81920,10.498,10.605,9.644,141.191,ok,4.944,1.198,0.110,4096,4096,4096,4084230,904120,12.000,11.996,12.000,32055.000,32055.000,32055.000
+md5_16,16,32110,65536,118.972,131071,65536,2667840,30741.815,29938.988,30040.179,86.121,9.436,1310720,14.359,14.709,12.161,1989.835,ok,64.351,50.464,3.947,65536,65536,65536,90008798,4713824,16.000,16.000,16.000,32108.000,32108.000,32108.000
+# consumed=14582506790153515260

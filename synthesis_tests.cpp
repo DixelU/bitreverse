@@ -74,8 +74,23 @@ models collect(const inv::program& program, const inv::values& target)
 void check_target(const inv::program& program, const inv::values& target, const models& expected)
 {
 	const auto canonical = program.evaluate(target, {});
+	inv::evaluation_statistics lazy{999, 999, 999}, schedule{999, 999, 999};
+	require(program.evaluate_profiled(target, &lazy) == canonical &&
+		program.evaluate_schedule(target, &schedule) == canonical,
+		"lazy and scheduled evaluation must agree with the canonical result");
+	require(lazy.decision_visits == lazy.validity_visits + lazy.selector_visits &&
+		schedule.decision_visits == schedule.validity_visits + schedule.selector_visits,
+		"evaluation statistics must reset and account for every visit");
+	require(schedule.decision_visits == program.synthesized_function_node_count(),
+		"schedule baseline must account for the full retained function graph");
+	require(lazy.validity_visits <= program.output_count() &&
+		lazy.selector_visits <= program.unknown_count() * program.output_count(),
+		"lazy evaluation must follow bounded target paths without input search");
 	if (expected.empty())
+	{
 		require(!canonical, "canonical synthesis accepted an unreachable output");
+		require(lazy.selector_visits == 0, "unreachable targets must stop before input selection");
+	}
 	else
 		require(canonical && *canonical == *expected.begin(),
 			"canonical synthesis did not choose the false-first matching input");
@@ -87,6 +102,21 @@ void check_table(const inv::program& original, const truth_table& expected)
 {
 	inv::synthesis_statistics statistics;
 	const auto synthesized = original.synthesized({}, &statistics);
+	size_t created = 0, operations = 0;
+	for (const auto& phase : statistics.phases)
+	{
+		require(phase.started && phase.completed, "successful synthesis must complete every profiled phase");
+		created += phase.created_nodes;
+		operations += phase.operations;
+		require(phase.resident_nodes == created && phase.live_nodes <= phase.resident_nodes,
+			"phase graph counts must distinguish cumulative creation from reachable output nodes");
+		require(phase.tracked_bytes <= phase.peak_tracked_bytes &&
+			phase.peak_tracked_bytes <= statistics.peak_tracked_bytes,
+			"tracked allocation peaks must bound phase allocations");
+	}
+	require(created == statistics.created_nodes && operations == statistics.operations &&
+		statistics.failed_phase == inv::synthesis_phase::count,
+		"phase statistics must account for the complete successful build");
 	require(synthesized.is_synthesized(), "synthesis did not select the direct nonlinear backend");
 	require(!original.is_synthesized(), "synthesis must leave the original program unchanged");
 	const auto loaded = roundtrip(synthesized);
@@ -109,6 +139,16 @@ void check_table(const inv::program& original, const truth_table& expected)
 	}
 	require_throws<std::invalid_argument>([&] { loaded.evaluate(inv::values(original.output_count() + 1), {}); },
 		"canonical synthesis must reject the wrong target width");
+	inv::evaluation_statistics rejected{999, 999, 999};
+	require_throws<std::invalid_argument>([&]
+	{
+		loaded.evaluate_profiled(inv::values(original.output_count() + 1), &rejected);
+	}, "profiled evaluation must reject the wrong target width");
+	require(rejected.decision_visits == 0, "rejected query must clear previous visit counts");
+	require_throws<std::invalid_argument>([&]
+	{
+		loaded.evaluate_schedule(inv::values(original.output_count() + 1));
+	}, "schedule baseline must reject the wrong target width");
 	require_throws<std::invalid_argument>([&] { loaded.evaluate(inv::values(original.output_count()), {true}); },
 		"canonical nonlinear synthesis must reject free parameter bits");
 	require_throws<std::invalid_argument>([&]
@@ -242,8 +282,13 @@ void limits_and_artifact_tests()
 		inv::synthesis_options options;
 		if (node_limit) options.max_nodes = 2;
 		else options.max_operations = 1;
-		require_throws<inv::synthesis_limit>([&] { (void)original.synthesized(options); },
+		inv::synthesis_statistics statistics;
+		require_throws<inv::synthesis_limit>([&] { (void)original.synthesized(options, &statistics); },
 			"exceeding a synthesis budget must fail explicitly");
+		require(statistics.failed_phase == inv::synthesis_phase::forward &&
+			statistics.phases[0].started && !statistics.phases[0].completed &&
+			!statistics.phases[1].started,
+			"budget failure must identify the interrupted phase without marking later phases started");
 		require(!original.is_synthesized(), "failed synthesis must not modify the original");
 		inv::values recovered;
 		require(original.solve({true, true, true}, [&](const auto& value) { recovered = value; return true; }) == 1 &&
@@ -367,6 +412,10 @@ void md5_synthesis_test()
 	{
 		check_target(synthesized, target, inputs);
 		check_target(loaded, target, inputs);
+		inv::evaluation_statistics visits;
+		(void)loaded.evaluate_profiled(target, &visits);
+		require(visits.decision_visits < loaded.synthesized_function_node_count() / 10,
+			"MD5 path evaluation must avoid scanning the much larger stored graph");
 	}
 	inv::values absent(128, false);
 	require(!expected.contains(absent), "MD5 rejection test unexpectedly chose an existing digest");

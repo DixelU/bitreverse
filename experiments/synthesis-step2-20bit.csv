@@ -1,0 +1,11 @@
+# Exact bounded-domain selector plus forward-check baseline; no decision-diagram relation.
+# Every native domain digest is validated after save/load, outside query timing; random/near invalid targets are independently absent.
+# Candidate query timings use the allocating vector<bool> API and consume every recovered input bit.
+# Native forward and sorted-table lookup use uint32_t words, same build flags, no bitvector conversion; all output words consumed.
+# Table build includes independent native digest generation and sorting; payload bytes include table_entry padding but exclude allocator metadata.
+# Domain enumeration is exponential in unknown bits: successful bounded synthesis alone does not establish structural compression.
+# budgets,case,max_assignments,max_nodes,max_operations,max_bytes
+case,unknown_bits,forward_nodes,domain_rows,build_ms,selector_nodes,selector_leaves,artifact_bytes,valid_ns,random_invalid_ns,near_invalid_ns,native_forward_ns,table_build_ms,table_payload_bytes,table_valid_ns,table_random_invalid_ns,table_near_invalid_ns,exhaustive_validation_ms,status,enumeration_ms,tree_ms,certificate_validation_ms,domain_assignments,allowed_assignments,distinct_outputs,operations,peak_bytes,valid_decision_visits,random_decision_visits,near_decision_visits,valid_forward_gates,random_forward_gates,near_forward_gates
+# budgets,md5_20,1048576,2097151,2000000000,268435456
+md5_20,20,32281,1048576,3862.673,2097151,1048576,38265226,28316.576,28659.801,28584.517,86.716,165.341,20971520,20.782,18.784,16.907,32308.828,ok,1041.611,2607.239,211.949,1048576,1048576,1048576,1870142268,65663672,20.000,20.000,20.000,32279.000,32279.000,32279.000
+# consumed=3801113434911950256

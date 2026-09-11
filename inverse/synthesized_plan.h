@@ -2,12 +2,14 @@
 #define DIXELU_BITREVERSE_INVERSE_SYNTHESIZED_PLAN_H
 
 #include "../bitreverse.h"
+#include "synthesis_profile.h"
 
 #include <charconv>
 #include <chrono>
 #include <functional>
 #include <istream>
 #include <ostream>
+#include <span>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
@@ -21,13 +23,14 @@ struct synthesis_options
 	size_t max_operations = 10000000;
 };
 
-struct synthesis_statistics
+struct evaluation_statistics
 {
-	size_t created_nodes{};
-	size_t operations{};
-	size_t relation_nodes{};
-	size_t function_nodes{};
-	std::chrono::nanoseconds elapsed{};
+	// Counts executed decisions, not Boolean gates. Lazy evaluation may visit a
+	// shared decision through several roots. The schedule evaluates it once,
+	// charging shared validity/selector decisions to the validity subtotal.
+	size_t decision_visits{};
+	size_t validity_visits{};
+	size_t selector_visits{};
 };
 
 class synthesis_limit : public std::runtime_error
@@ -81,13 +84,15 @@ class synthesized_plan
 	class manager
 	{
 		const synthesis_options& options_;
-		std::unordered_map<decision, size_t, decision_hash> unique_;
-		std::unordered_map<decision, size_t, decision_hash> apply_cache_;
+		std::pmr::unordered_map<decision, size_t, decision_hash> unique_;
+		std::pmr::unordered_map<decision, size_t, decision_hash> apply_cache_;
 	public:
-		std::vector<decision> nodes{{absent, 0, 0}, {absent, 1, 1}};
+		std::pmr::vector<decision> nodes;
 		size_t operations{};
 
-		explicit manager(const synthesis_options& options) : options_(options) {}
+		explicit manager(const synthesis_options& options, std::pmr::memory_resource* memory)
+			: options_(options), unique_(memory), apply_cache_(memory),
+			  nodes({{absent, 0, 0}, {absent, 1, 1}}, memory) {}
 		void tick(size_t amount = 1)
 		{
 			if (amount > options_.max_operations - operations)
@@ -165,7 +170,7 @@ class synthesized_plan
 	size_t validity_nodes_{};
 
 	static std::vector<unsigned char> reachable(
-		const std::vector<decision>& nodes, const std::vector<size_t>& roots,
+		std::span<const decision> nodes, const std::vector<size_t>& roots,
 		manager* budget = nullptr)
 	{
 		if (budget) budget->tick(nodes.size());
@@ -273,14 +278,50 @@ public:
 		synthesis_statistics* statistics = nullptr)
 	{
 		const auto started = std::chrono::steady_clock::now();
-		manager bdd(options);
+		synthesis_memory_resource memory;
+		manager bdd(options, &memory);
 		if (statistics) *statistics = {};
+		auto phase = synthesis_phase::forward;
+		auto phase_started = started;
+		size_t phase_nodes = 0, phase_operations = 0;
+		if (statistics) statistics->phases[0].started = true;
+		memory.begin_phase();
+		auto finish_phase = [&](bool completed, const std::vector<size_t>& live_roots)
+		{
+			if (!statistics) return;
+			auto& record = statistics->phases[static_cast<size_t>(phase)];
+			if (record.completed) return;
+			record.elapsed = std::chrono::steady_clock::now() - phase_started;
+			record.created_nodes = bdd.nodes.size() - 2 - phase_nodes;
+			record.operations = bdd.operations - phase_operations;
+			record.resident_nodes = bdd.nodes.size() - 2;
+			record.tracked_bytes = memory.current();
+			record.peak_tracked_bytes = memory.phase_peak();
+			if (completed)
+			{
+				const auto scan_started = std::chrono::steady_clock::now();
+				const auto live = reachable(bdd.nodes, live_roots);
+				record.live_nodes = static_cast<size_t>(std::count(live.begin() + 2, live.end(), 1));
+				statistics->profiling_elapsed += std::chrono::steady_clock::now() - scan_started;
+			}
+			record.completed = completed;
+		};
+		auto begin_phase = [&](synthesis_phase next)
+		{
+			phase = next;
+			phase_started = std::chrono::steady_clock::now();
+			phase_nodes = bdd.nodes.size() - 2;
+			phase_operations = bdd.operations;
+			memory.begin_phase();
+			if (statistics) statistics->phases[static_cast<size_t>(phase)].started = true;
+		};
 		auto report = [&]
 		{
 			if (!statistics) return;
 			statistics->created_nodes = bdd.nodes.size() - 2;
 			statistics->operations = bdd.operations;
 			statistics->elapsed = std::chrono::steady_clock::now() - started;
+			statistics->peak_tracked_bytes = memory.peak();
 		};
 		try
 		{
@@ -293,7 +334,7 @@ public:
 			if (circuit.inputs.size() != count)
 				throw std::invalid_argument("Invalid synthesis circuit");
 			bdd.tick(count);
-			std::vector<size_t> columns(count, absent), forward(count);
+			std::pmr::vector<size_t> columns(count, absent, &memory), forward(count, &memory);
 			for (size_t column = 0; column < inputs; ++column)
 			{
 				bdd.tick();
@@ -303,12 +344,12 @@ public:
 					throw std::invalid_argument("Invalid synthesis input variable");
 				columns[id] = column;
 			}
-			std::vector<size_t> roots = output_ids;
+			std::pmr::vector<size_t> roots(output_ids.begin(), output_ids.end(), &memory);
 			bdd.tick(requirement_ids.size());
 			roots.insert(roots.end(), requirement_ids.begin(), requirement_ids.end());
-			std::vector<unsigned char> state(count);
+			std::pmr::vector<unsigned char> state(count, &memory);
 			struct frame { size_t id, next; };
-			std::vector<frame> stack;
+			std::pmr::vector<frame> stack(&memory);
 			for (const size_t root : roots)
 			{
 				bdd.tick();
@@ -350,11 +391,16 @@ public:
 					stack.pop_back();
 				}
 			}
+			std::vector<size_t> profile_roots;
+			if (statistics)
+				for (const size_t id : roots) profile_roots.push_back(forward[id]);
+			finish_phase(true, profile_roots);
+			begin_phase(synthesis_phase::relation);
 			size_t domain = 1;
 			for (const size_t id : requirement_ids) domain = bdd.apply('&', domain, forward[id]);
-			std::vector<size_t> complements;
+			std::pmr::vector<size_t> complements(&memory);
 			for (const size_t id : output_ids) complements.push_back(bdd.negate(forward[id]));
-			std::unordered_map<pair_key, size_t, pair_hash> relation_cache;
+			std::pmr::unordered_map<pair_key, size_t, pair_hash> relation_cache(&memory);
 			std::function<size_t(size_t, size_t)> relation = [&](size_t index, size_t subset) -> size_t
 			{
 				bdd.tick();
@@ -375,15 +421,26 @@ public:
 			plan.input_count_ = inputs;
 			plan.output_count_ = outputs;
 			plan.relation_ = relation(0, domain);
+			finish_phase(true, {plan.relation_});
+			begin_phase(synthesis_phase::witness);
 
-			struct witness { size_t valid; std::vector<size_t> bits; };
-			std::unordered_map<size_t, witness> witness_cache;
+			struct witness
+			{
+				size_t valid;
+				std::pmr::vector<size_t> bits;
+				witness(size_t value, size_t width, std::pmr::memory_resource* resource)
+					: valid(value), bits(width, resource) {}
+				witness(const witness& other)
+					: valid(other.valid), bits(other.bits, other.bits.get_allocator()) {}
+				witness(witness&&) = default;
+			};
+			std::pmr::unordered_map<size_t, witness> witness_cache(&memory);
 			std::function<witness(size_t)> synthesize = [&](size_t id) -> witness
 			{
 				bdd.tick(inputs + 1);
 				if (const auto found = witness_cache.find(id); found != witness_cache.end())
 					return found->second;
-				witness result{static_cast<size_t>(id != 0), std::vector<size_t>(inputs)};
+				witness result{static_cast<size_t>(id != 0), inputs, &memory};
 				if (id >= 2 && bdd.nodes[id].variable < outputs)
 				{
 					const auto current = bdd.nodes[id];
@@ -415,13 +472,15 @@ public:
 			};
 			const auto canonical = synthesize(plan.relation_);
 			plan.valid_ = canonical.valid;
-			plan.functions_ = canonical.bits;
+			plan.functions_.assign(canonical.bits.begin(), canonical.bits.end());
 			auto plan_roots = plan.functions_;
 			plan_roots.push_back(plan.valid_);
 			plan_roots.push_back(plan.relation_);
+			finish_phase(true, plan_roots);
+			begin_phase(synthesis_phase::compaction);
 			const auto used = reachable(bdd.nodes, plan_roots, &bdd);
 			bdd.tick(bdd.nodes.size());
-			std::vector<size_t> remap(bdd.nodes.size());
+			std::pmr::vector<size_t> remap(bdd.nodes.size(), &memory);
 			remap[1] = 1;
 			for (size_t id = 2; id < bdd.nodes.size(); ++id)
 				if (used[id])
@@ -439,10 +498,17 @@ public:
 				statistics->relation_nodes = plan.relation_node_count();
 				statistics->function_nodes = plan.function_node_count();
 			}
+			finish_phase(true, plan_roots);
 			report();
 			return plan;
 		}
-		catch (...) { report(); throw; }
+		catch (...)
+		{
+			if (statistics) statistics->failed_phase = phase;
+			finish_phase(false, {});
+			report();
+			throw;
+		}
 	}
 
 	size_t input_count() const { return input_count_; }
@@ -453,8 +519,44 @@ public:
 	size_t selector_node_count() const { return selector_nodes_; }
 	size_t validity_node_count() const { return validity_nodes_; }
 
-	std::optional<std::vector<bool>> evaluate(const std::vector<bool>& target) const
+	std::optional<std::vector<bool>> evaluate(const std::vector<bool>& target,
+		evaluation_statistics* statistics = nullptr) const
 	{
+		if (statistics) *statistics = {};
+		if (target.size() != output_count_) throw std::invalid_argument("Wrong synthesized target width");
+		evaluation_statistics visits;
+		auto follow = [&](size_t root, size_t& count)
+		{
+			while (root >= 2)
+			{
+				const auto current = function_steps_[root - 2];
+				root = target[current.variable] ? current.high : current.low;
+				++count;
+			}
+			return root != 0;
+		};
+		// Every root depends only on the supplied target. Following its selected
+		// edges is ordinary function evaluation, with no input choices or search.
+		if (!follow(function_valid_, visits.validity_visits))
+		{
+			visits.decision_visits = visits.validity_visits;
+			if (statistics) *statistics = visits;
+			return std::nullopt;
+		}
+		std::vector<bool> result(input_count_);
+		for (size_t bit = 0; bit < input_count_; ++bit)
+			result[bit] = follow(function_results_[bit], visits.selector_visits);
+		visits.decision_visits = visits.validity_visits + visits.selector_visits;
+		if (statistics) *statistics = visits;
+		return result;
+	}
+
+	// Retain the full topological evaluator as a comparison baseline. It always
+	// evaluates the combined DAG, including selectors for invalid targets.
+	std::optional<std::vector<bool>> evaluate_schedule(const std::vector<bool>& target,
+		evaluation_statistics* statistics = nullptr) const
+	{
+		if (statistics) *statistics = {};
 		if (target.size() != output_count_) throw std::invalid_argument("Wrong synthesized target width");
 		std::vector<unsigned char> values(function_steps_.size() + 2);
 		values[1] = 1;
@@ -462,6 +564,12 @@ public:
 		{
 			const auto current = function_steps_[index];
 			values[index + 2] = values[target[current.variable] ? current.high : current.low];
+		}
+		if (statistics)
+		{
+			statistics->decision_visits = function_steps_.size();
+			statistics->validity_visits = validity_nodes_;
+			statistics->selector_visits = function_steps_.size() - validity_nodes_;
 		}
 		if (!values[function_valid_]) return std::nullopt;
 		std::vector<bool> result(input_count_);
@@ -567,10 +675,6 @@ public:
 				throw std::invalid_argument("Invalid synthesized export input column");
 		// Only the canonical witness and validity DAG are emitted. The larger
 		// relation used to enumerate alternative witnesses is deliberately absent.
-		std::vector<size_t> remap(nodes_.size());
-		remap[1] = 1;
-		for (size_t index = 0; index < function_order_.size(); ++index)
-			remap[function_order_[index]] = index + 2;
 		// to_chars keeps generated C++ independent of the destination stream's
 		// base, locale, boolalpha, precision and other numeric formatting flags.
 		auto number = [](size_t value)
@@ -584,26 +688,34 @@ public:
 			<< "inline std::optional<std::array<bool, " << number(input_columns.size()) << ">>\n"
 			<< "bitreverse_inverse(const std::array<bool, " << number(output_count_) << ">& target)\n{\n"
 			<< "  struct decision { std::size_t variable, low, high; };\n"
-			<< "  // A fixed topological Boolean circuit, evaluated once per target.\n"
-			<< "  static constexpr std::array<decision, " << number(function_order_.size()) << "> schedule{{\n";
-		for (const size_t id : function_order_)
+			<< "  // Follow only the branches selected by the supplied target.\n"
+			<< "  static constexpr std::array<decision, " << number(function_steps_.size()) << "> schedule{{\n";
+		for (const auto current : function_steps_)
 		{
-			const auto current = nodes_[id];
-			stream << "    {" << number(current.variable) << ", " << number(remap[current.low])
-				<< ", " << number(remap[current.high]) << "},\n";
+			stream << "    {" << number(current.variable) << ", " << number(current.low)
+				<< ", " << number(current.high) << "},\n";
 		}
-		stream << "  }};\n  std::array<bool, " << number(function_order_.size() + 2) << "> v{};\n"
-			<< "  v[1] = true;\n"
-			<< "  for (std::size_t i = 0; i < schedule.size(); ++i) {\n"
-			<< "    const auto step = schedule[i];\n"
-			<< "    v[i + 2] = v[target[step.variable] ? step.high : step.low];\n  }\n"
-			<< "  if (!v[" << number(remap[valid_]) << "]) return std::nullopt;\n"
+		stream << "  }};\n"
+			<< "  const auto evaluate = [&target](std::size_t root) {\n"
+			<< "    while (root >= 2) {\n"
+			<< "      const auto step = schedule[root - 2];\n"
+			<< "      root = target[step.variable] ? step.high : step.low;\n"
+			<< "    }\n    return root != 0;\n  };\n"
+			<< "  if (!evaluate(" << number(function_valid_) << ")) return std::nullopt;\n"
+			<< "  static constexpr std::array<std::size_t, " << number(input_count_) << "> roots{{";
+		for (size_t bit = 0; bit < input_count_; ++bit)
+		{
+			if (bit) stream << ", ";
+			stream << number(function_results_[bit]);
+		}
+		stream << "}};\n  std::array<bool, " << number(input_count_) << "> inputs{};\n"
+			<< "  for (std::size_t bit = 0; bit < roots.size(); ++bit) inputs[bit] = evaluate(roots[bit]);\n"
 			<< "  return std::array<bool, " << number(input_columns.size()) << ">{{";
 		for (size_t index = 0; index < input_columns.size(); ++index)
 		{
 			if (index) stream << ", ";
 			if (input_columns[index] == absent) stream << (input_constants[index] ? "true" : "false");
-			else stream << "v[" << number(remap[functions_[input_columns[index]]]) << "]";
+			else stream << "inputs[" << number(input_columns[index]) << "]";
 		}
 		stream << "}};\n}\n";
 		if (!stream) throw std::runtime_error("Failed to export synthesized inverse");

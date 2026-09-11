@@ -21,6 +21,10 @@ add_executable(synthesis_benchmark synthesis_benchmark.cpp)
 target_compile_options(synthesis_benchmark PRIVATE -Wall -Wextra -pedantic -O3)
 target_link_options(synthesis_benchmark PRIVATE -static-libgcc -static-libstdc++ -static)
 
+add_executable(selector_benchmark selector_benchmark.cpp)
+target_compile_options(selector_benchmark PRIVATE -Wall -Wextra -pedantic -O3)
+target_link_options(selector_benchmark PRIVATE -static-libgcc -static-libstdc++ -static)
+
 add_executable(mrev multiplication_reversal.cpp)
 target_compile_options(mrev PUBLIC -Wall -Wextra -Wuninitialized -pedantic -fstack-protector-all -O3 -ggdb)
 target_link_options(mrev PRIVATE -static-libgcc -static-libstdc++ -static)
@@ -62,6 +66,12 @@ if(BUILD_TESTING)
     add_test(NAME synthesis_tests COMMAND synthesis_tests)
     set_tests_properties(synthesis_tests PROPERTIES TIMEOUT 30)
 
+    add_executable(selector_tests selector_tests.cpp)
+    target_compile_options(selector_tests PRIVATE -Wall -Wextra -Wuninitialized -pedantic -O3)
+    target_link_options(selector_tests PRIVATE -static-libgcc -static-libstdc++ -static)
+    add_test(NAME selector_tests COMMAND selector_tests)
+    set_tests_properties(selector_tests PROPERTIES TIMEOUT 60)
+
     add_test(NAME synthesis_cpp_export
         COMMAND ${CMAKE_COMMAND}
             "-DINVERSE_DEMO=$<TARGET_FILE:inverse_demo>"
@@ -69,6 +79,15 @@ if(BUILD_TESTING)
             "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/synthesis-export-test"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/synthesis_cli_test.cmake")
     set_tests_properties(synthesis_cpp_export PROPERTIES TIMEOUT 90)
+
+    add_test(NAME selector_cpp_export
+        COMMAND ${CMAKE_COMMAND}
+            "-DINVERSE_DEMO=$<TARGET_FILE:inverse_demo>"
+            "-DCXX=${CMAKE_CXX_COMPILER}"
+            "-DMETHOD=synthesize-selector"
+            "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/selector-export-test"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/synthesis_cli_test.cmake")
+    set_tests_properties(selector_cpp_export PROPERTIES TIMEOUT 90)
 
     add_test(NAME inverse_cli_persistence
         COMMAND ${CMAKE_COMMAND}
@@ -95,7 +114,9 @@ if(BUILD_TESTING)
             inverse_tests
             affine_inverse_tests
             synthesis_tests
+            selector_tests
             synthesis_cpp_export
+            selector_cpp_export
             inverse_cli_persistence
             int_tracker_performance_regression
             PROPERTIES
