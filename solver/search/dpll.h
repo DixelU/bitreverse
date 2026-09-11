@@ -8,7 +8,6 @@ struct engine
 {
 	using solution_callback = std::function<bool(const crs_state&)>;
 
-	bool target;
 	bool first_only;
 	bool collect_solutions;
 	solver_options options;
@@ -17,7 +16,9 @@ struct engine
 	bool stop_requested{false};
 	size_t solution_count{0};
 
-	compiled_circuit circuit;
+	std::shared_ptr<const compiled_circuit> compiled;
+	const compiled_circuit& circuit;
+	std::vector<std::pair<node_id, bool>> bindings;
 	solver_state state;
 	gate_propagator gates;
 	affine_propagator affine;
@@ -31,17 +32,38 @@ struct engine
 		solution_callback callback = {},
 		solver_options selected_options = {},
 		solver_statistics* selected_statistics = nullptr) :
-		target(target_value),
+		engine(
+			std::make_shared<const compiled_circuit>(std::move(root)),
+			{{0, target_value}},
+			first,
+			collect,
+			std::move(callback),
+			selected_options,
+			selected_statistics)
+	{
+	}
+
+	engine(
+		std::shared_ptr<const compiled_circuit> selected_circuit,
+		std::vector<std::pair<node_id, bool>> selected_bindings,
+		bool first,
+		bool collect = true,
+		solution_callback callback = {},
+		solver_options selected_options = {},
+		solver_statistics* selected_statistics = nullptr) :
 		first_only(first),
 		collect_solutions(collect),
 		options(selected_options),
 		statistics(selected_statistics),
 		on_solution(std::move(callback)),
-		circuit(std::move(root)),
+		compiled(std::move(selected_circuit)),
+		circuit(solver_core::require_compiled_circuit(compiled)),
+		bindings(std::move(selected_bindings)),
 		state(circuit, selected_statistics),
 		gates(circuit),
 		affine(circuit, selected_options)
 	{
+		solver_core::validate_bindings(circuit, bindings);
 		if (options.conflict_learning)
 			throw std::logic_error(
 				"Conflict learning engine is not implemented yet");
@@ -171,8 +193,20 @@ struct engine
 	{
 		const auto started = std::chrono::steady_clock::now();
 
-		if (assign(circuit.root_id, target))
+		state.begin_assignment();
+		bool consistent = true;
+		for (const auto& [id, value] : bindings)
+			if (!state.set_value(id, value))
+			{
+				consistent = false;
+				break;
+			}
+		if (consistent)
+			consistent = propagate();
+		if (consistent)
 			search();
+		else if (statistics)
+			++statistics->conflicts;
 
 		if (statistics)
 			statistics->elapsed =

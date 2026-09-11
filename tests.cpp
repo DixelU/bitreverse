@@ -6,6 +6,7 @@
 #include <stdexcept>
 
 #include "bitreverse.h"
+#include "crc32.h"
 #include "md5.h"
 
 namespace br = dixelu::bitreverse;
@@ -650,39 +651,16 @@ void multiplication_and_division_tests()
 	}
 }
 
-template<template<size_t> typename int_tracker>
-int_tracker<32> tracked_crc32(const std::vector<int_tracker<8>>& message)
-{
-	int_tracker<32> byte;
-	int_tracker<32> mask;
-	int_tracker<32> crc = 0xFFFFFFFF;
-	const int_tracker<32> polynomial = 0xEDB88320;
-
-	for (const auto& character : message)
-	{
-		byte = int_tracker<32>(character);
-		crc ^= byte;
-
-		for (int bit = 0; bit < 8; ++bit)
-		{
-			mask = -(crc & 1);
-			crc = (crc >> 1) ^ (polynomial & mask);
-		}
-	}
-
-	return ~crc;
-}
-
 void crc_hybrid_solver_regression_test()
 {
 	const std::vector<br::itu8> known_message =
 		{'b', 'i', 't', 'r', 'e', 'v', '!'};
-	const auto expected_crc = tracked_crc32(known_message);
+	const auto expected_crc = br::hash::crc32(known_message);
 
 	std::vector<br::itu8> unknown_message =
 		{br::unknown, br::unknown, br::unknown, br::unknown,
 			br::unknown, br::unknown, br::unknown};
-	const auto symbolic_crc = tracked_crc32(unknown_message);
+	const auto symbolic_crc = br::hash::crc32(unknown_message);
 
 	br::collision_resolution::crs_state first_solution;
 	br::solver_options options;
@@ -711,7 +689,7 @@ void crc_hybrid_solver_regression_test()
 			byte,
 			first_solution.assignments);
 
-	const auto actual_crc = tracked_crc32(unknown_message);
+	const auto actual_crc = br::hash::crc32(unknown_message);
 	require(
 		actual_crc.__to_string() == expected_crc.__to_string(),
 		"reversed message must reproduce the target CRC");

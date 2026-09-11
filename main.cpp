@@ -1,6 +1,7 @@
 ﻿#include <iostream>
 
 #include "bitreverse.h"
+#include "crc32.h"
 
 void bitwise_reversal_test()
 {
@@ -44,37 +45,15 @@ void bitwise_reversal_test()
 	}
 }
 
-template<template<size_t> typename int_tracker>
-int_tracker<32> crc32(std::vector<int_tracker<8>> message)
-{
-	int_tracker<32> byte, mask;
-
-	int_tracker<32> crc = 0xFFFFFFFF;
-	const int_tracker<32> mask_const = 0xEDB88320;
-
-	for (auto& ch : message)
-	{
-		byte = int_tracker<32>(ch);
-		crc = crc ^ byte;
-
-		for (int j = 7; j >= 0; j--)
-		{
-			mask = -(crc & 1);
-			crc = (crc >> 1) ^ (mask_const & mask);
-		}
-	}
-	return ~crc;
-}
-
 void real_crc32_reversal()
 {
 	using dixelu::bitreverse::unknown;
 
 	const std::vector<dixelu::bitreverse::itu8> real_string = { 'c', 'r', 'c', '3', '1', '!' };
-	const dixelu::bitreverse::int_tracker<32> reversal_target = crc32(real_string);
+	const dixelu::bitreverse::int_tracker<32> reversal_target = dixelu::bitreverse::hash::crc32(real_string);
 
 	std::vector<dixelu::bitreverse::itu8> hashed_string = { unknown, unknown, unknown, unknown, unknown, unknown };
-	const auto crc32_result = crc32(hashed_string);
+	const auto crc32_result = dixelu::bitreverse::hash::crc32(hashed_string);
 
 	dixelu::bitreverse::bit_tracker hashed_string_is_not_ascii;
 	for (auto& itu8 : hashed_string)

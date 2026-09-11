@@ -14,7 +14,6 @@ struct engine
 {
 	using solution_callback = std::function<bool(const crs_state&)>;
 
-	bool target;
 	bool first_only;
 	bool collect_solutions;
 	solver_options options;
@@ -23,7 +22,9 @@ struct engine
 	bool stop_requested{false};
 	size_t solution_count{0};
 
-	compiled_circuit circuit;
+	std::shared_ptr<const compiled_circuit> compiled;
+	const compiled_circuit& circuit;
+	std::vector<std::pair<node_id, bool>> bindings;
 	affine_propagator affine_probe;
 	clause_database database;
 	reasoned_gate_propagator gates;
@@ -47,13 +48,33 @@ struct engine
 		solution_callback callback = {},
 		solver_options selected_options = {},
 		solver_statistics* selected_statistics = nullptr) :
-		target(target_value),
+		engine(
+			std::make_shared<const compiled_circuit>(std::move(root)),
+			{{0, target_value}},
+			first,
+			collect,
+			std::move(callback),
+			selected_options,
+			selected_statistics)
+	{
+	}
+
+	engine(
+		std::shared_ptr<const compiled_circuit> selected_circuit,
+		std::vector<std::pair<node_id, bool>> selected_bindings,
+		bool first,
+		bool collect = true,
+		solution_callback callback = {},
+		solver_options selected_options = {},
+		solver_statistics* selected_statistics = nullptr) :
 		first_only(first),
 		collect_solutions(collect),
 		options(selected_options),
 		statistics(selected_statistics),
 		on_solution(std::move(callback)),
-		circuit(std::move(root)),
+		compiled(std::move(selected_circuit)),
+		circuit(solver_core::require_compiled_circuit(compiled)),
+		bindings(std::move(selected_bindings)),
 		affine_probe(circuit, selected_options),
 		database(circuit.nodes.size()),
 		gates(circuit, database),
@@ -62,6 +83,7 @@ struct engine
 		reasons(circuit.nodes.size(), no_clause),
 		seen(circuit.nodes.size(), 0)
 	{
+		solver_core::validate_bindings(circuit, bindings);
 		if (circuit.nodes.size() >
 			std::numeric_limits<literal_t>::max() / 2U)
 			throw std::length_error(
@@ -138,10 +160,11 @@ struct engine
 	void build_cnf()
 	{
 		gates.build_reason_clauses();
-		database.add_clause(
-			{literal_for_value(circuit.root_id, target)},
-			false,
-			false);
+		for (const auto& [id, value] : bindings)
+			database.add_clause(
+				{literal_for_value(id, value)},
+				false,
+				false);
 	}
 
 	bool initialize_units()

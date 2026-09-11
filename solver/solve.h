@@ -54,4 +54,34 @@ inline size_t solve_stream(
 		statistics);
 }
 
+// Reuse compiled adjacency with fresh assignments and search state. Only
+// bindings constrain node values: the first root has no implicit target.
+// All retained unknowns, including otherwise unused input roots, are
+// enumerated. Returning false from the callback stops after that model.
+// An unsatisfiable query returns zero; invalid node IDs throw.
+inline size_t solve_compiled_stream(
+	std::shared_ptr<const solver_core::compiled_circuit> circuit,
+	const std::vector<std::pair<solver_core::node_id, bool>>& bindings,
+	solution_callback on_solution,
+	const solver_options& options = {},
+	solver_statistics* statistics = nullptr)
+{
+	solver_core::validate_bindings(
+		solver_core::require_compiled_circuit(circuit), bindings);
+	if (options.conflict_learning)
+	{
+		cdcl::engine solver(
+			std::move(circuit), bindings, false, false,
+			std::move(on_solution), options, statistics);
+		(void)solver.run();
+		return solver.solution_count;
+	}
+
+	dpll::engine solver(
+		std::move(circuit), bindings, false, false,
+		std::move(on_solution), options, statistics);
+	(void)solver.run();
+	return solver.solution_count;
+}
+
 #endif // DIXELU_BITREVERSE_SOLVER_SOLVE_H
