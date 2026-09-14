@@ -40,7 +40,7 @@ target_link_options(int_tracker_benchmark PRIVATE -static-libgcc -static-libstdc
 include(CTest)
 
 if(BUILD_TESTING)
-    foreach(test_target solver_budget_tests cegis_tests)
+    foreach(test_target solver_budget_tests cegis_tests multiplication_reversal_tests)
         add_executable(${test_target} ${test_target}.cpp)
         target_compile_options(${test_target} PRIVATE -Wall -Wextra -pedantic -O3)
         target_link_options(${test_target} PRIVATE -static-libgcc -static-libstdc++ -static)
@@ -130,6 +130,7 @@ if(BUILD_TESTING)
         set_tests_properties(
             solver_budget_tests
             cegis_tests
+            multiplication_reversal_tests
             buffered_object_pool_tests
             bitreverse_tests
             inverse_tests
