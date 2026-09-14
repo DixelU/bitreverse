@@ -21,6 +21,7 @@ struct solver_statistics
 	std::size_t backjumps{0};
 	std::size_t conflict_analysis_cutoffs{0};
 	std::size_t peak_trail{0};
+	std::size_t search_steps{0};
 	bool affine_enabled{false};
 	std::chrono::nanoseconds elapsed{};
 

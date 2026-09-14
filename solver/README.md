@@ -20,6 +20,19 @@ The implementation headers are included by `bitreverse.h` in their intended
 internal namespaces; consumers should continue to include only
 `bitreverse.h`.
 
+Set `solver_options::max_search_steps` to a positive count to bound a query's
+search work; zero preserves unlimited search. Both engines count deterministic
+search and propagation units, including affine elimination and conflict
+analysis. `solver_statistics::search_steps` reports consumed units after a
+completed or interrupted run. Circuit compilation and engine initialization
+are outside this search budget.
+
+Budget exhaustion throws `solver_limit`, even without a statistics pointer.
+It never returns a partial count that could be mistaken for UNSAT. Enumeration
+callbacks may already have received models before a later budget exception;
+returning false from the callback still stops normally after that model. A
+first-model query proves UNSAT only when it returns zero without an exception.
+
 ## Conflict learning and affine reasoning
 
 Set `solver_options::conflict_learning` to select CDCL. Circuit implications

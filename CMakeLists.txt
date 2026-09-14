@@ -25,6 +25,10 @@ add_executable(selector_benchmark selector_benchmark.cpp)
 target_compile_options(selector_benchmark PRIVATE -Wall -Wextra -pedantic -O3)
 target_link_options(selector_benchmark PRIVATE -static-libgcc -static-libstdc++ -static)
 
+add_executable(cegis_benchmark cegis_benchmark.cpp)
+target_compile_options(cegis_benchmark PRIVATE -Wall -Wextra -pedantic -O3)
+target_link_options(cegis_benchmark PRIVATE -static-libgcc -static-libstdc++ -static)
+
 add_executable(mrev multiplication_reversal.cpp)
 target_compile_options(mrev PUBLIC -Wall -Wextra -Wuninitialized -pedantic -fstack-protector-all -O3 -ggdb)
 target_link_options(mrev PRIVATE -static-libgcc -static-libstdc++ -static)
@@ -36,6 +40,13 @@ target_link_options(int_tracker_benchmark PRIVATE -static-libgcc -static-libstdc
 include(CTest)
 
 if(BUILD_TESTING)
+    foreach(test_target solver_budget_tests cegis_tests)
+        add_executable(${test_target} ${test_target}.cpp)
+        target_compile_options(${test_target} PRIVATE -Wall -Wextra -pedantic -O3)
+        target_link_options(${test_target} PRIVATE -static-libgcc -static-libstdc++ -static)
+        add_test(NAME ${test_target} COMMAND ${test_target})
+        set_tests_properties(${test_target} PROPERTIES TIMEOUT 60)
+    endforeach()
     add_executable(buffered_object_pool_tests buffered_object_pool_tests.cpp)
     target_compile_options(buffered_object_pool_tests PUBLIC -Wall -Wextra -Wuninitialized -pedantic)
     target_link_options(buffered_object_pool_tests PRIVATE -static-libgcc -static-libstdc++ -static)
@@ -89,6 +100,14 @@ if(BUILD_TESTING)
             -P "${CMAKE_CURRENT_SOURCE_DIR}/synthesis_cli_test.cmake")
     set_tests_properties(selector_cpp_export PROPERTIES TIMEOUT 90)
 
+    add_test(NAME cegis_cpp_export
+        COMMAND ${CMAKE_COMMAND}
+            "-DINVERSE_DEMO=$<TARGET_FILE:inverse_demo>"
+            "-DCXX=${CMAKE_CXX_COMPILER}"
+            "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/cegis-export-test"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cegis_cli_test.cmake")
+    set_tests_properties(cegis_cpp_export PROPERTIES TIMEOUT 90)
+
     add_test(NAME inverse_cli_persistence
         COMMAND ${CMAKE_COMMAND}
             "-DINVERSE_DEMO=$<TARGET_FILE:inverse_demo>"
@@ -109,6 +128,8 @@ if(BUILD_TESTING)
             "${CMAKE_CXX_COMPILER}"
             DIRECTORY)
         set_tests_properties(
+            solver_budget_tests
+            cegis_tests
             buffered_object_pool_tests
             bitreverse_tests
             inverse_tests
@@ -117,6 +138,7 @@ if(BUILD_TESTING)
             selector_tests
             synthesis_cpp_export
             selector_cpp_export
+            cegis_cpp_export
             inverse_cli_persistence
             int_tracker_performance_regression
             PROPERTIES

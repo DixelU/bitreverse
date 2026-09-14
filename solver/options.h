@@ -2,9 +2,17 @@
 #define DIXELU_BITREVERSE_SOLVER_OPTIONS_H
 
 #include <cstddef>
+#include <stdexcept>
 
 namespace dixelu::bitreverse
 {
+
+// Exhausting a search budget never returns an UNSAT-looking zero count.
+class solver_limit : public std::runtime_error
+{
+public:
+	solver_limit() : std::runtime_error("Solver search step budget exceeded") {}
+};
 
 struct solver_options
 {
@@ -22,6 +30,11 @@ struct solver_options
 	// conflict. Zero keeps conflict analysis unlimited for pure-CDCL
 	// comparisons.
 	std::size_t max_conflict_analysis_nodes{512};
+
+	// Deterministic search/propagation work units; zero is unlimited. Circuit
+	// compilation and engine initialization are outside this search budget.
+	// Exhaustion throws solver_limit, including when statistics are omitted.
+	std::size_t max_search_steps{0};
 };
 
 } // namespace dixelu::bitreverse

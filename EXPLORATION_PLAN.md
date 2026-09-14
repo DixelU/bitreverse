@@ -8,16 +8,26 @@ decision diagrams and simple tables as the unknown domain grows.
 This is a proposal for the next experiments. The existing prototype and its
 measurements are described in [SYNTHESIS_RESULTS.md](SYNTHESIS_RESULTS.md).
 
-**Progress:** the first two implementation steps are complete. Lazy evaluation and
+**Progress:** the first two implementation steps are complete, and step three now
+has a bounded counterexample-guided polynomial learner with UNSAT certification.
+It discovers a 48-bit structured nonlinear inverse from 65 counterexamples,
+stores 1,894 bytes, and takes 25.35 ms with a raised solver budget. Random
+permutation controls expose the fixed quadratic family's limits. This is
+structural inversion beyond table construction, but does not improve the MD5
+result. See [step 3 results](CEGIS_RESULTS.md) and the
+[external-backend comparison proposal](CEGIS_COMPARISON.md).
+
+Earlier steps: lazy evaluation and
 construction profiling are implemented. Checked
 one-byte MD5 queries measured 0.71 microseconds versus 30.84 for the retained
 schedule baseline. Both 10- and 12-bit MD5 builds stop during forward conversion,
 before relation construction. The candidate-plus-forward-check backend now
 builds the 20-bit MD5 domain in 3.86 seconds and passes independent verification
 of all 1,048,576 inputs after serialization/reload. It still enumerates the domain
-and stores a large tree. The current suite has ten passing checks.
-[Step 2 details](SELECTOR_RESULTS.md). Next is counterexample-guided synthesis
-without full-domain enumeration.
+and stores a large tree. At that checkpoint the suite had ten passing checks.
+[Step 2 details](SELECTOR_RESULTS.md). Next is learning shared intermediate
+functions beyond the fixed polynomial basis, composing reversible updates, and
+removing the current proof-depth limitation before further MD5 experiments.
 
 ## What we are trying to establish
 

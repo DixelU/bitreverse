@@ -227,7 +227,7 @@ significant bit of an eight-bit `x` to be zero. Such requirements are saved with
 the inverse and enforced for every target. Construct known values as constants
 before running the algorithm so ordinary tracking can simplify them early.
 
-For either affine or nonlinear programs, use `solve` to stream matches:
+For affine, synthesized, selected, or search programs, use `solve` to stream matches:
 
 ```cpp
 const size_t count = loaded.solve(target,
@@ -267,7 +267,7 @@ sizes are available through `synthesized_node_count()`,
 `synthesized_relation_node_count()`, and `synthesized_function_node_count()`.
 Use `synthesized_selector_node_count()` and `synthesized_validity_node_count()`
 to separate input recovery from target validation.
-`export_cpp` requires a synthesized program or compiled selector.
+`export_cpp` requires a synthesized, selected, or learned program.
 
 For a compiled selector, use `program::selected(selector_options, &statistics)`
 instead of `synthesized`. `is_selected()` identifies this backend. `evaluate`
@@ -287,6 +287,36 @@ reports `selector_evaluation_statistics` containing `decision_visits` and
 `selector_assignment_count()`, and `selector_forward_node_count()` describe the
 compiled representation. Check `is_selected()` before applying backend-specific
 BDD or affine statistics methods.
+
+For counterexample-guided polynomial synthesis, use `program::learned`:
+
+```cpp
+inv::bits x(3);
+for (auto& bit : x) bit = dixelu::bitreverse::unknown;
+const auto forward = inv::program::compile(x, {x[0], x[1], x[2] ^ (x[0] & x[1])});
+inv::cegis_options options;
+inv::cegis_statistics statistics;
+const auto inverse = forward.learned(options, &statistics);
+const auto input = inverse.evaluate({true, true, false}, {}); // {true, true, true}
+```
+
+The learner fits XOR combinations of target bits and pairwise AND terms to SAT
+counterexamples. A completed UNSAT check certifies every reachable target before
+returning a plan. It does not enumerate the domain. `is_learned()` identifies
+this backend; `learned_term_count()` and `learned_coefficient_count()` describe
+its compact polynomial. Save/load and standalone C++ export are supported.
+Each query evaluates the candidate and checks it with the forward circuit.
+It selects one valid preimage, without guaranteeing canonical order;
+`solve(target, callback)` works with the default limit of one, and other limits
+throw because this backend does not enumerate all preimages. Free bits must be empty.
+
+The CLI command is `synthesize-cegis INPUT.bri OUTPUT.bri`, with optional
+`--degree=1|2`, `--max-features`, `--max-counterexamples`, `--max-solver-steps`,
+and `--max-nodes`. These budgets must be positive. Failed synthesis throws
+`cegis_limit` and leaves the source and destination intact. The learner is
+limited to its polynomial basis; failure is not evidence that the function has
+no compact inverse. Defaults, safety caps, certification and benchmark outcomes
+are documented in [the CEGIS experiment](CEGIS_RESULTS.md).
 
 Construction statistics also contain `phases` for `forward`, `relation`,
 `witness`, and `compaction`, with elapsed time, created/resident nodes, and nodes

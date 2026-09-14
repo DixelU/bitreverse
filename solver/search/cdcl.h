@@ -18,6 +18,7 @@ struct engine
 	bool collect_solutions;
 	solver_options options;
 	solver_statistics* statistics;
+	solver_core::search_budget budget;
 	solution_callback on_solution;
 	bool stop_requested{false};
 	size_t solution_count{0};
@@ -71,6 +72,7 @@ struct engine
 		collect_solutions(collect),
 		options(selected_options),
 		statistics(selected_statistics),
+		budget{selected_options.max_search_steps, 0, selected_statistics},
 		on_solution(std::move(callback)),
 		compiled(std::move(selected_circuit)),
 		circuit(solver_core::require_compiled_circuit(compiled)),
@@ -139,6 +141,7 @@ struct engine
 
 	bool enqueue(literal_t literal, clause_id reason)
 	{
+		budget.tick();
 		const node_id variable = literal_variable(literal);
 		const int8_t value =
 			static_cast<int8_t>(!literal_is_negated(literal));
@@ -169,6 +172,7 @@ struct engine
 
 	bool initialize_units()
 	{
+		budget.tick();
 		if (database.contains_empty_clause)
 			return false;
 
@@ -193,6 +197,7 @@ struct engine
 
 		while (propagation_head < trail.size())
 		{
+			budget.tick();
 			const literal_t assigned = trail[propagation_head++];
 			if (statistics)
 				++statistics->propagations;
@@ -207,6 +212,7 @@ struct engine
 
 				while (index < watching.size())
 				{
+					budget.tick();
 					const clause_id id = watching[index];
 					clause& current = database.clauses[id];
 
@@ -231,6 +237,7 @@ struct engine
 						candidate < current.literals.size();
 						++candidate)
 					{
+						budget.tick();
 						if (candidate == current.watched[0] ||
 							candidate == current.watched[1])
 							continue;
@@ -271,6 +278,7 @@ struct engine
 			for (const node_id parent :
 				circuit.parents[assigned_node])
 			{
+				budget.tick();
 				conflict = gates.imply(parent, value, assign);
 				if (conflict != no_clause)
 					return conflict;
@@ -295,12 +303,16 @@ struct engine
 		const auto clear_seen = [this]()
 		{
 			for (const node_id variable : seen_nodes)
+			{
+				budget.tick();
 				seen[variable] = 0;
+			}
 			seen_nodes.clear();
 		};
 
 		do
 		{
+			budget.tick();
 			if (options.max_conflict_analysis_nodes != 0 &&
 				analyzed_nodes++ >=
 					options.max_conflict_analysis_nodes)
@@ -312,6 +324,7 @@ struct engine
 			const clause& reason_clause = database.clauses[source];
 			for (const literal_t literal : reason_clause.literals)
 			{
+				budget.tick();
 				const node_id variable =
 					literal_variable(literal);
 				if (variable == resolved ||
@@ -329,6 +342,7 @@ struct engine
 
 			do
 			{
+				budget.tick();
 				if (trail_index == 0)
 					throw std::logic_error(
 						"CDCL conflict analysis lost its pivot");
@@ -357,11 +371,14 @@ struct engine
 			for (size_t index = 2;
 				index < result.learned.size();
 				++index)
+			{
+				budget.tick();
 				if (levels[literal_variable(
 					result.learned[index])] >
 					levels[literal_variable(
 						result.learned[highest])])
 					highest = index;
+			}
 
 			std::swap(result.learned[1], result.learned[highest]);
 			result.backtrack_level =
@@ -383,6 +400,7 @@ struct engine
 			index > target_trail_size;
 			--index)
 		{
+			budget.tick();
 			const node_id variable =
 				literal_variable(trail[index - 1]);
 			values[variable] = -1;
@@ -416,6 +434,7 @@ struct engine
 	{
 		while (current_level() != 0)
 		{
+			budget.tick();
 			const size_t failed_level = current_level();
 			const literal_t failed_decision =
 				decision_literals.back();
@@ -441,12 +460,13 @@ struct engine
 		return false;
 	}
 
-	bool preferred_phase(node_id variable) const
+	bool preferred_phase(node_id variable)
 	{
 		size_t false_votes = 0;
 		size_t true_votes = 0;
 		for (const node_id parent : circuit.parents[variable])
 		{
+			budget.tick();
 			const int8_t output = value_of(parent);
 			if (output == -1)
 				continue;
@@ -466,11 +486,14 @@ struct engine
 		return true_votes > false_votes;
 	}
 
-	node_id select_variable() const
+	node_id select_variable()
 	{
 		for (const node_id variable : circuit.variables)
+		{
+			budget.tick();
 			if (values[variable] == -1)
 				return variable;
+		}
 		return no_node;
 	}
 
@@ -479,6 +502,7 @@ struct engine
 		crs_state solution;
 		for (const node_id variable : circuit.variables)
 		{
+			budget.tick();
 			if (values[variable] == -1)
 				throw std::logic_error(
 					"CDCL attempted to record an incomplete model");
@@ -500,10 +524,13 @@ struct engine
 		std::vector<literal_t> blocking;
 		blocking.reserve(circuit.variables.size());
 		for (const node_id variable : circuit.variables)
+		{
+			budget.tick();
 			blocking.push_back(
 				literal_for_value(
 					variable,
 					values[variable] == 0));
+		}
 
 		backtrack(0);
 		if (blocking.empty())
@@ -514,6 +541,7 @@ struct engine
 			blocking.end(),
 			[&](literal_t literal)
 			{
+				budget.tick();
 				return literal_value(literal) != 0;
 			});
 
@@ -521,6 +549,7 @@ struct engine
 		literal_t unit = 0;
 		for (const literal_t literal : blocking)
 		{
+			budget.tick();
 			const int8_t value = literal_value(literal);
 			if (value == 1)
 				return true;
@@ -542,7 +571,8 @@ struct engine
 
 	solutions_t run()
 	{
-		const auto started = std::chrono::steady_clock::now();
+		const solver_core::run_timer timer{statistics};
+		budget.tick();
 
 		bool consistent = initialize_units();
 		if (!consistent && statistics)
@@ -550,6 +580,7 @@ struct engine
 
 		while (consistent && !stop_requested)
 		{
+			budget.tick();
 			const clause_id conflict = propagate();
 			if (conflict != no_clause)
 			{
@@ -607,9 +638,6 @@ struct engine
 				false);
 		}
 
-		if (statistics)
-			statistics->elapsed =
-				std::chrono::steady_clock::now() - started;
 		return solutions;
 	}
 };

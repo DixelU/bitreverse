@@ -58,7 +58,8 @@ inline size_t solve_stream(
 // bindings constrain node values: the first root has no implicit target.
 // All retained unknowns, including otherwise unused input roots, are
 // enumerated. Returning false from the callback stops after that model.
-// An unsatisfiable query returns zero; invalid node IDs throw.
+// An unsatisfiable query returns zero; invalid node IDs throw. Exhausting
+// max_search_steps throws solver_limit, never an incomplete zero count.
 inline size_t solve_compiled_stream(
 	std::shared_ptr<const solver_core::compiled_circuit> circuit,
 	const std::vector<std::pair<solver_core::node_id, bool>>& bindings,

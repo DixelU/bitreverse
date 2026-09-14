@@ -13,6 +13,7 @@ struct gate_propagator
 
 	bool imply(solver_state& state, node_id gate) const
 	{
+		state.tick_search();
 		const std::uint8_t operation = circuit.nodes[gate]->operation;
 		if (operation == '=' || operation == '*')
 			return true;

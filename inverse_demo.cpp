@@ -33,6 +33,9 @@ void usage(std::ostream& out)
 		<< "                          [--max-operations=N]\n"
 		<< "  inverse_demo synthesize-selector INPUT.bri OUTPUT.bri [--max-assignments=N]\n"
 		<< "                                   [--max-nodes=N] [--max-operations=N] [--max-bytes=N]\n"
+		<< "  inverse_demo synthesize-cegis INPUT.bri OUTPUT.bri [--degree=1|2]\n"
+		<< "                                [--max-features=N] [--max-counterexamples=N]\n"
+		<< "                                [--max-solver-steps=N] [--max-nodes=N]\n"
 		<< "  inverse_demo export-cpp INPUT.bri OUTPUT.h\n"
 		<< "  inverse_demo inspect FILE\n"
 		<< "  inverse_demo solve FILE TARGET_HEX [--limit=N|--all] [--output=FILE]\n"
@@ -42,7 +45,9 @@ void usage(std::ostream& out)
 		<< "--printable requires every input byte to be ASCII 0x20..0x7e.\n"
 		<< "Synthesis compiles an exact inverse function; resource limits must be positive.\n"
 		<< "synthesize-selector enumerates a bounded domain and uses one forward check per query.\n"
-		<< "export-cpp writes a standalone canonical inverse from a synthesized or selector file.\n"
+		<< "synthesize-cegis learns a polynomial selector and requires a completed UNSAT proof.\n"
+		<< "CEGIS files provide one witness per target; --all and --limit other than 1 are unsupported.\n"
+		<< "export-cpp writes a standalone inverse from a compiled inverse file.\n"
 		<< "TARGET_HEX is the ordinary CRC32 or MD5 hex digest, without a 0x prefix.\n"
 		<< "Solutions are complete input messages as hex, one per line on stdout.\n"
 		<< "The default limit is 1; --all or --limit=0 enumerates all matches.\n"
@@ -138,7 +143,11 @@ void describe(const inv::program& program, std::ostream& out)
 		<< ", unknown bits: " << program.unknown_count()
 		<< ", output bits: " << program.output_count()
 		<< ", circuit nodes: " << program.node_count() << '\n';
-	if (program.is_selected())
+	if (program.is_learned())
+		out << "Inverse: counterexample-learned polynomial with forward validation; no query-time search\n"
+			<< "Shared polynomial terms: " << program.learned_term_count()
+			<< "; coefficient references: " << program.learned_coefficient_count() << '\n';
+	else if (program.is_selected())
 		out << "Inverse: compiled selector with forward validation; no query-time search\n"
 			<< "Selector nodes: " << program.selector_node_count()
 			<< "; leaves: " << program.selector_leaf_count()
@@ -324,12 +333,59 @@ int synthesize_selector(int argc, char** argv)
 	return 0;
 }
 
+void describe_cegis(std::ostream& stream, const inv::cegis_statistics& statistics)
+{
+	stream << "CEGIS build: " << std::chrono::duration<double>(statistics.elapsed).count()
+		<< " seconds, " << statistics.features << " basis features, " << statistics.counterexamples
+		<< " counterexamples, " << statistics.solver_calls << " solver calls, "
+		<< statistics.solver_steps << " solver steps\n"
+		<< "  Candidate: " << statistics.candidate_terms << " terms, "
+		<< statistics.candidate_coefficients << " coefficient references; verification: "
+		<< std::chrono::duration<double>(statistics.verification_elapsed).count() << " seconds\n"
+		<< "  Certification: " << (statistics.certified ? "completed UNSAT miter" : "incomplete") << '\n';
+	if (statistics.failed_phase != "none") stream << "Failed phase: " << statistics.failed_phase << '\n';
+}
+
+int synthesize_cegis(int argc, char** argv)
+{
+	if (argc < 4) throw std::invalid_argument("synthesize-cegis expects INPUT.bri OUTPUT.bri");
+	inv::cegis_options options;
+	for (int index = 4; index < argc; ++index)
+	{
+		const std::string_view argument(argv[index]);
+		const auto separator = argument.find('=');
+		const auto name = argument.substr(0, separator);
+		size_t* value = nullptr;
+		if (name == "--degree") value = &options.max_degree;
+		else if (name == "--max-features") value = &options.max_features;
+		else if (name == "--max-counterexamples") value = &options.max_counterexamples;
+		else if (name == "--max-solver-steps") value = &options.max_solver_steps;
+		else if (name == "--max-nodes") value = &options.max_nodes;
+		if (!value || separator == std::string_view::npos)
+			throw std::invalid_argument("unknown CEGIS option: " + std::string(argument));
+		*value = parse_limit(argument.substr(separator + 1), name);
+	}
+	const auto source = read_program(argv[2]);
+	require_different_files(argv[2], argv[3]);
+	inv::cegis_statistics statistics;
+	const auto program = [&]
+	{
+		try { return source.learned(options, &statistics); }
+		catch (const inv::cegis_limit&) { describe_cegis(std::cerr, statistics); throw; }
+	}();
+	describe_cegis(std::cout, statistics);
+	save_program(program, argv[3]);
+	std::cout << "Saved certified learned inverse: " << argv[3] << '\n';
+	describe(program, std::cout);
+	return 0;
+}
+
 int export_cpp(int argc, char** argv)
 {
 	if (argc != 4)
 		throw std::invalid_argument("export-cpp expects INPUT.bri OUTPUT.h");
 	const auto program = read_program(argv[2]);
-	if (!program.is_synthesized() && !program.is_selected())
+	if (!program.is_synthesized() && !program.is_selected() && !program.is_learned())
 		throw std::invalid_argument("export-cpp requires a synthesized inverse or compiled selector");
 	require_different_files(argv[2], argv[3]);
 	std::ostringstream generated;
@@ -480,7 +536,7 @@ int main(int argc, char** argv)
 			return 0;
 		}
 		if (argc < 2)
-			throw std::invalid_argument("expected build, synthesize, synthesize-selector, export-cpp, inspect, or solve");
+			throw std::invalid_argument("expected build, synthesize, synthesize-selector, synthesize-cegis, export-cpp, inspect, or solve");
 		const std::string_view command(argv[1]);
 		if (command == "build")
 			return build(argc, argv);
@@ -490,6 +546,8 @@ int main(int argc, char** argv)
 			return synthesize(argc, argv);
 		if (command == "synthesize-selector")
 			return synthesize_selector(argc, argv);
+		if (command == "synthesize-cegis")
+			return synthesize_cegis(argc, argv);
 		if (command == "export-cpp")
 			return export_cpp(argc, argv);
 		if (command == "inspect")

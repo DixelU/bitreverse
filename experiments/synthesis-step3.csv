@@ -1,0 +1,18 @@
+# Bounded degree-two ANF CEGIS inverse; no input-domain enumeration in inverse construction.
+# Formal certification is the backend UNSAT proof; native checks are independent validation after save/load.
+# Native checks exhaust widths <=12; larger widths use 4096 fixed-seed probes, which are not a proof.
+# Random permutation truth tables define controls only; degree-two grammar failure is an expected bounded outcome.
+# Inverse timing includes vector<bool> allocation and forward validation; native timing uses uint64_t values.
+# Every query result is consumed; timing batches stop at 65536 queries or approximately 40 ms.
+# seed=9945838919312838975
+case,width,forward_nodes,status,failed_phase,max_degree,max_features,max_counterexamples,max_solver_steps,max_nodes,build_ms,verification_ms,features,counterexamples,solver_calls,solver_steps,candidate_terms,candidate_coefficients,artifact_bytes,inverse_ns,native_forward_ns,validation_mode,validation_cases,validation_ms,formally_certified
+toffoli_3,3,5,certified,none,2,4096,256,2000000,100000,0.091,0.071,7,5,6,544,4,4,190,199.921,2.228,native_exhaustive,8,0.003,1
+toffoli_6,6,10,certified,none,2,4096,256,2000000,100000,0.258,0.216,22,9,10,4700,8,8,291,214.371,2.304,native_exhaustive,64,0.018,1
+toffoli_12,12,20,certified,none,2,4096,256,2000000,100000,0.706,0.585,79,17,18,56764,16,16,514,269.470,5.386,native_exhaustive,4096,1.221,1
+toffoli_24,24,40,certified,none,2,4096,256,2000000,100000,3.750,3.069,301,33,34,786423,32,32,974,503.815,6.058,native_random_probes,4096,1.826,1
+toffoli_48,48,80,limit,verification,2,4096,256,2000000,100000,4.211,3.549,1177,8,9,2000000,7,7,0,0.000,0.000,not_run,0,0.000,0
+random_permutation_3,3,26,certified,none,2,4096,256,2000000,100000,0.417,0.397,7,7,8,35992,6,12,440,229.874,1.663,native_exhaustive,8,0.004,1
+random_permutation_4,4,63,limit,learning,2,4096,256,2000000,100000,1.719,1.631,11,10,10,267152,9,23,0,0.000,0.000,not_run,0,0.000,0
+random_permutation_5,5,142,limit,verification,2,4096,256,2000000,100000,5.060,4.947,16,14,15,2000000,13,27,0,0.000,0.000,not_run,0,0.000,0
+random_permutation_6,6,319,limit,verification,2,4096,256,2000000,100000,5.518,5.406,22,5,6,2000000,5,8,0,0.000,0.000,not_run,0,0.000,0
+# consumed=14291123601029907248

@@ -138,6 +138,7 @@ struct affine_propagator
 
 		for (const node_id id : state.trail)
 		{
+			state.tick_search(word_count);
 			row equation;
 			equation.coefficients.assign(
 				words(id),
@@ -153,6 +154,7 @@ struct affine_propagator
 			column < atom_count && rank < rows.size();
 			++column)
 		{
+			state.tick_search();
 			const size_t word = column / 64;
 			const std::uint64_t bit =
 				std::uint64_t{1} << (column % 64);
@@ -160,7 +162,10 @@ struct affine_propagator
 			size_t pivot = rank;
 			while (pivot < rows.size() &&
 				!(rows[pivot].coefficients[word] & bit))
+			{
+				state.tick_search();
 				++pivot;
+			}
 			if (pivot == rows.size())
 				continue;
 
@@ -169,6 +174,7 @@ struct affine_propagator
 				row_index < rows.size();
 				++row_index)
 			{
+				state.tick_search();
 				if (row_index == rank ||
 					!(rows[row_index].coefficients[word] & bit))
 					continue;
@@ -176,8 +182,11 @@ struct affine_propagator
 				for (size_t current_word = 0;
 					current_word < word_count;
 					++current_word)
+				{
+					state.tick_search();
 					rows[row_index].coefficients[current_word] ^=
 						rows[rank].coefficients[current_word];
+				}
 				rows[row_index].rhs =
 					rows[row_index].rhs != rows[rank].rhs;
 			}
@@ -186,10 +195,12 @@ struct affine_propagator
 
 		for (const auto& equation : rows)
 		{
+			state.tick_search();
 			size_t set_bits = 0;
 			size_t only_column = 0;
 			for (size_t word = 0; word < word_count; ++word)
 			{
+				state.tick_search();
 				const size_t word_bits =
 					std::popcount(equation.coefficients[word]);
 				if (word_bits != 0)

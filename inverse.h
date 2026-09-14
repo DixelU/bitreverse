@@ -11,6 +11,7 @@
 #include "inverse/affine_plan.h"
 #include "inverse/synthesized_plan.h"
 #include "inverse/selector_plan.h"
+#include "inverse/cegis_plan.h"
 
 namespace dixelu::bitreverse::inversion
 {
@@ -52,6 +53,7 @@ class program
 	std::optional<detail::affine_plan> affine_;
 	std::optional<detail::synthesized_plan> synthesized_;
 	std::optional<detail::selector_plan> selected_;
+	std::optional<detail::cegis_plan> learned_;
 
 	program() = default;
 
@@ -250,6 +252,29 @@ public:
 	bool is_affine() const { return affine_.has_value(); }
 	bool is_synthesized() const { return synthesized_.has_value(); }
 	bool is_selected() const { return selected_.has_value(); }
+	bool is_learned() const { return learned_.has_value(); }
+
+	// Learn a polynomial selector from counterexamples, then certify it with
+	// the relational UNSAT miter. No incomplete candidate is returned.
+	program learned(const cegis_options& options = {}, cegis_statistics* statistics = nullptr) const
+	{
+		auto plan = detail::cegis_plan::compile(
+			*circuit_, outputs_, variables_, requirements_, options, statistics);
+		program result = *this;
+		result.learned_ = std::move(plan);
+		result.affine_.reset(); result.synthesized_.reset(); result.selected_.reset();
+		return result;
+	}
+	size_t learned_term_count() const
+	{
+		if (!learned_) throw std::logic_error("program has no learned inverse");
+		return learned_->term_count();
+	}
+	size_t learned_coefficient_count() const
+	{
+		if (!learned_) throw std::logic_error("program has no learned inverse");
+		return learned_->coefficient_count();
+	}
 
 	// All expensive reasoning occurs here. Failure leaves this program intact.
 	// Explicit synthesis never silently falls back to query-time search.
@@ -262,6 +287,7 @@ public:
 		result.synthesized_ = std::move(plan);
 		result.affine_.reset();
 		result.selected_.reset();
+		result.learned_.reset();
 		return result;
 	}
 
@@ -276,6 +302,7 @@ public:
 		result.selected_ = std::move(plan);
 		result.affine_.reset();
 		result.synthesized_.reset();
+		result.learned_.reset();
 		return result;
 	}
 
@@ -339,13 +366,14 @@ public:
 	// header has no dependency on tracking, decision-diagram construction, or SAT.
 	void export_cpp(std::ostream& stream) const
 	{
-		if (!synthesized_ && !selected_)
+		if (!synthesized_ && !selected_ && !learned_)
 			throw std::logic_error("synthesize the inverse before exporting C++");
 		values constants;
 		constants.reserve(inputs_.size());
 		for (const size_t id : inputs_)
 			constants.push_back(circuit_->nodes[id]->state != 0);
-		if (selected_) selected_->export_cpp(stream, input_columns_, constants);
+		if (learned_) learned_->export_cpp(stream, input_columns_, constants);
+		else if (selected_) selected_->export_cpp(stream, input_columns_, constants);
 		else synthesized_->export_cpp(stream, input_columns_, constants);
 	}
 
@@ -359,6 +387,12 @@ public:
 	std::optional<values> evaluate(const values& target, const values& free_bits) const
 	{
 		check_target(target);
+		if (learned_)
+		{
+			if (!free_bits.empty()) throw std::invalid_argument("learned inverse selects one input without free bits");
+			const auto assignment = learned_->evaluate(target);
+			return assignment ? std::optional<values>(full_input(*assignment)) : std::nullopt;
+		}
 		if (selected_)
 		{
 			if (!free_bits.empty())
@@ -428,6 +462,22 @@ public:
 		check_target(target);
 		if (!callback)
 			throw std::invalid_argument("inverse requires a solution callback");
+		if (learned_)
+		{
+			if (max_solutions != 1)
+				throw std::logic_error("learned inverse provides one witness; enumeration requires another backend");
+			const auto started = std::chrono::steady_clock::now();
+			if (statistics) statistics->reset();
+			const auto solution = evaluate(target, {});
+			if (solution) callback(*solution);
+			if (statistics)
+			{
+				statistics->nodes = node_count(); statistics->variables = unknown_count();
+				statistics->solutions = solution.has_value();
+				statistics->elapsed = std::chrono::steady_clock::now() - started;
+			}
+			return solution.has_value();
+		}
 		if (selected_)
 		{
 			const auto started = std::chrono::steady_clock::now();
@@ -546,8 +596,10 @@ private:
 				write_size(stream, id);
 			stream.put('\n');
 		}
-		stream << (selected_ ? "SELECTOR\n" : synthesized_ ? "SYNTHESIZED\n" : affine_ ? "AFFINE\n" : "SEARCH\n");
-		if (selected_)
+		stream << (learned_ ? "LEARNED\n" : selected_ ? "SELECTOR\n" : synthesized_ ? "SYNTHESIZED\n" : affine_ ? "AFFINE\n" : "SEARCH\n");
+		if (learned_)
+			learned_->save(stream);
+		else if (selected_)
 			selected_->save(stream);
 		else if (synthesized_)
 			synthesized_->save(stream);
@@ -685,7 +737,10 @@ public:
 		std::string backend;
 		if (!(stream >> backend))
 			throw std::invalid_argument("missing inverse backend");
-		if (backend == "SELECTOR")
+		if (backend == "LEARNED")
+			result.learned_ = detail::cegis_plan::load(stream,
+				*result.circuit_, result.outputs_, result.variables_, result.requirements_);
+		else if (backend == "SELECTOR")
 		{
 			result.selected_ = detail::selector_plan::load(stream,
 				*result.circuit_, result.outputs_, result.variables_, result.requirements_);
