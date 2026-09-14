@@ -13,14 +13,17 @@ using uint_arbitrary_t = dixelu::bitreverse::int_tracker<Bits>;
 
 // Helper to create uint_arbitrary_t from hex string
 template<std::size_t Bits>
-uint_arbitrary_t<Bits> from_hex(const std::string& hex) {
+uint_arbitrary_t<Bits> from_hex(const std::string& hex)
+{
 	uint_arbitrary_t<Bits> res(0);
-	for (char c : hex) {
+	for (char c : hex)
+	{
 		res <<= 4;
 		if (c >= '0' && c <= '9') res |= uint_arbitrary_t<Bits>(c - '0');
 		else if (c >= 'a' && c <= 'f') res |= uint_arbitrary_t<Bits>(c - 'a' + 10);
 		else if (c >= 'A' && c <= 'F') res |= uint_arbitrary_t<Bits>(c - 'A' + 10);
 	}
+	
 	return res;
 }
 
@@ -36,7 +39,10 @@ struct ECPoint
 	{
 		bit_tracker both_inf = is_infinity & other.is_infinity;
 		bit_tracker neither_inf = (!is_infinity) & (!other.is_infinity);
-		bit_tracker coords_match = uint_arbitrary_t<Bits>::are_equal(x, other.x) & uint_arbitrary_t<Bits>::are_equal(y, other.y);
+		bit_tracker coords_match =
+			uint_arbitrary_t<Bits>::are_equal(x, other.x) &
+				uint_arbitrary_t<Bits>::are_equal(y, other.y);
+
 		return both_inf | (neither_inf & coords_match);
 	}
 };
@@ -56,9 +62,13 @@ struct Secp256k1
 };
 
 template<std::size_t Bits>
-const uint_arbitrary_t<Bits> Secp256k1<Bits>::p = from_hex<Bits>("fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f");
+const uint_arbitrary_t<Bits> Secp256k1<Bits>::p =
+	from_hex<Bits>("fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f");
+
 template<std::size_t Bits>
-const uint_arbitrary_t<Bits> Secp256k1<Bits>::n = from_hex<Bits>("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141");
+const uint_arbitrary_t<Bits> Secp256k1<Bits>::n =
+	from_hex<Bits>("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141");
+
 template<std::size_t Bits>
 const ECPoint<Bits> Secp256k1<Bits>::G = {
 	.x = from_hex<Bits>("79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"),
@@ -85,25 +95,26 @@ uint_arbitrary_t<Bits> mod_add(
 	const uint_arbitrary_t<Bits>& m)
 {
 	using extended = uint_arbitrary_t<Bits + 1>;
+
 	const auto sum = extended{a} + extended{b};
 	auto reduced = sum;
+
 	bit_tracker no_underflow;
 	reduced.self_sub_ret_carry(extended{m}, no_underflow);
-	return uint_arbitrary_t<Bits>{
-		extended::__execute_ternary_assign(no_underflow, reduced, sum)};
+
+	return uint_arbitrary_t<Bits>{extended::__execute_ternary_assign(no_underflow, reduced, sum)};
 }
 
 template<std::size_t Bits>
 uint_arbitrary_t<Bits> mod_subtract(
-	const uint_arbitrary_t<Bits>& a, const uint_arbitrary_t<Bits>& b,
-	const uint_arbitrary_t<Bits>& m)
+	const uint_arbitrary_t<Bits>& a, const uint_arbitrary_t<Bits>& b, const uint_arbitrary_t<Bits>& m)
 {
 	auto difference = a;
 	bit_tracker no_underflow;
 	difference.self_sub_ret_carry(b, no_underflow);
+
 	// On underflow, adding m modulo 2^Bits cancels the earlier wraparound.
-	return uint_arbitrary_t<Bits>::__execute_ternary_assign(
-		no_underflow, difference, difference + m);
+	return uint_arbitrary_t<Bits>::__execute_ternary_assign(no_underflow, difference, difference + m);
 }
 
 inline bool is_known_bit(const bit_tracker& bit, bool value)
@@ -133,16 +144,19 @@ uint_arbitrary_t<Bits> mod_inverse(const uint_arbitrary_t<Bits>& a, const uint_a
 	uint_arbitrary_t<Bits> base = a % m;
 	uint_arbitrary_t<Bits> exp = m - uint_arbitrary_t<Bits>(2);
 
-	for (size_t i = 0; i < Bits; ++i)
+	for (volatile size_t i = 0; i < Bits; ++i)
 	{
 		res = mod_multiply(res, res, m);
+
 		// Square-then-multiply consumes the exponent MSB first; bits[0]
 		// is the MSB. Skip unused products when the exponent bit is known.
 		if (is_known_bit(exp.bits[i], false))
 			continue;
+
 		auto multiplied = mod_multiply(res, base, m);
 		res = uint_arbitrary_t<Bits>::__execute_ternary_assign(exp.bits[i], multiplied, res);
 	}
+
 	return res;
 }
 
@@ -153,6 +167,7 @@ ECPoint<Bits> ec_double(const ECPoint<Bits>& P)
 {
 	bit_tracker is_zero_y = uint_arbitrary_t<Bits>::are_equal(P.y, uint_arbitrary_t<Bits>(0));
 	bit_tracker res_is_inf = P.is_infinity | is_zero_y;
+
 	if (is_known_bit(res_is_inf, true))
 		return ECPoint<Bits>{.is_infinity = true};
 
@@ -177,6 +192,7 @@ ECPoint<Bits> ec_add(const ECPoint<Bits>& P, const ECPoint<Bits>& Q)
 {
 	if (is_known_bit(P.is_infinity, true))
 		return Q;
+
 	if (is_known_bit(Q.is_infinity, true))
 		return P;
 
@@ -196,6 +212,7 @@ ECPoint<Bits> ec_add(const ECPoint<Bits>& P, const ECPoint<Bits>& Q)
 		const auto y3 = mod_subtract(mod_multiply(lambda, mod_subtract(P.x, x3, p), p), P.y, p);
 		result = ECPoint<Bits>{.x = x3, .y = y3, .is_infinity = false};
 	}
+
 	if (!is_known_bit(x_equal, false))
 	{
 		ECPoint<Bits> double_res{.is_infinity = true};
@@ -218,7 +235,8 @@ ECPoint<Bits> ec_multiply(const uint_arbitrary_t<Bits>& scalar, ECPoint<Bits> ba
 	size_t first_bit = 0;
 	while (first_bit < Bits && is_known_bit(scalar.bits[first_bit], false))
 		++first_bit;
-	for (size_t i = Bits; i-- > first_bit;)
+
+	for (volatile size_t i = Bits; i-- > first_bit;)
 	{
 		// LSB first here: current_base carries the increasing power of two.
 		const auto& bit = scalar.bits[i];

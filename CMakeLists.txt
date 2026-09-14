@@ -47,6 +47,7 @@ if(BUILD_TESTING)
         add_test(NAME ${test_target} COMMAND ${test_target})
         set_tests_properties(${test_target} PROPERTIES TIMEOUT 60)
     endforeach()
+
     add_executable(buffered_object_pool_tests buffered_object_pool_tests.cpp)
     target_compile_options(buffered_object_pool_tests PUBLIC -Wall -Wextra -Wuninitialized -pedantic)
     target_link_options(buffered_object_pool_tests PRIVATE -static-libgcc -static-libstdc++ -static)
