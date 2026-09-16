@@ -44,6 +44,11 @@ add_executable(multiplication_shape_benchmark benchmarks/multiplication_shape_be
 target_link_libraries(multiplication_shape_benchmark PRIVATE bitreverse::headers)
 target_compile_options(multiplication_shape_benchmark PRIVATE -Wall -Wextra -pedantic -O3)
 
+add_executable(hash_reversal_benchmark benchmarks/hash_reversal_benchmark.cpp)
+target_link_libraries(hash_reversal_benchmark PRIVATE bitreverse::headers)
+target_compile_options(hash_reversal_benchmark PRIVATE -Wall -Wextra -pedantic -O3)
+target_link_options(hash_reversal_benchmark PRIVATE -static-libgcc -static-libstdc++ -static)
+
 foreach(example_target partial_assert_crc32 partial_assert_md5)
     add_executable(${example_target} examples/${example_target}.cpp)
     target_link_libraries(${example_target} PRIVATE bitreverse::headers)
@@ -72,7 +77,7 @@ if(BUILD_TESTING)
         set_tests_properties(${partial_assert_target} PROPERTIES TIMEOUT 60)
     endforeach()
 
-    foreach(test_target solver_budget_tests cegis_tests multiplication_reversal_tests)
+    foreach(test_target solver_budget_tests cegis_tests multiplication_reversal_tests sha_tests circuit_metrics_tests)
         add_executable(${test_target} tests/${test_target}.cpp)
         target_link_libraries(${test_target} PRIVATE bitreverse::headers)
         target_compile_options(${test_target} PRIVATE -Wall -Wextra -pedantic -O3)
@@ -175,6 +180,8 @@ if(BUILD_TESTING)
             solver_budget_tests
             cegis_tests
             multiplication_reversal_tests
+            sha_tests
+            circuit_metrics_tests
             buffered_object_pool_tests
             bitreverse_tests
             inverse_tests

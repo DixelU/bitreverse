@@ -71,6 +71,14 @@ provides `partial_assert_context::partial_assert` and `simplify` without using
 The separate `partial_assert_crc32` and `partial_assert_md5` executables compare
 early propagation with deferring the same constraints until construction ends.
 
+Full-round tracked SHA-1 and SHA-256 are available in `sha1.h` and `sha256.h`.
+The [hash reversal comparison](docs/HASH_REVERSAL_RESULTS.md) measures CRC32,
+MD5, SHA-1, and SHA-256 DAG depth/width **before digest equality**, then runs
+bounded digest-only preimage searches with independent verification. Include
+`circuit_metrics.h` and call `measure_circuit(digest)` to inspect a forward DAG.
+The `hash_reversal_benchmark` target and `benchmarks/run_hash_reversal.py` driver
+reproduce the experiments; SHA is not yet added to the `inverse_demo` CLI.
+
 The current CMake configuration targets a GCC-compatible C++23 toolchain and
 requires CMake 3.25 or newer. For example, in a shell where GCC and Ninja are on
 `PATH`:
@@ -197,7 +205,8 @@ Start with the [solver architecture](docs/SOLVER.md) or the
 cover [BDD synthesis](docs/SYNTHESIS_RESULTS.md),
 [compiled selectors](docs/SELECTOR_RESULTS.md),
 [counterexample-guided synthesis](docs/CEGIS_RESULTS.md), and
-[256-bit multiplication](docs/MULTIPLICATION_256_RESULTS.md).
+[256-bit multiplication](docs/MULTIPLICATION_256_RESULTS.md), plus the
+[SHA/MD5/CRC32 comparison](docs/HASH_REVERSAL_RESULTS.md).
 The [exploration plan](docs/EXPLORATION_PLAN.md) and
 [Manthan comparison proposal](docs/CEGIS_COMPARISON.md) describe future work.
 
