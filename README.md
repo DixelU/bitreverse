@@ -37,7 +37,7 @@ The synthesized canonical function can also be exported as standalone C++ with
 no project or solver dependency. Multiple preimages remain available through the
 saved relation; the exported function selects one of them.
 
-See [the first synthesis experiments](SYNTHESIS_RESULTS.md) for measured nonlinear
+See [the first synthesis experiments](docs/SYNTHESIS_RESULTS.md) for measured nonlinear
 and MD5 results, including separate sizes for input recovery and target validation.
 
 For a bounded nonlinear domain, a **compiled selector with forward validation**
@@ -45,7 +45,7 @@ provides another construction path. It enumerates concrete forward evaluations
 64 assignments at a time, builds a target-bit tree, and retains groups of matching
 inputs. Each query selects an input and verifies it with one forward pass. It
 avoids intermediate and relation BDDs, while retaining exponential enumeration
-and storage costs. [Step 2 measurements](SELECTOR_RESULTS.md) reach 20 unknown MD5
+and storage costs. [Step 2 measurements](docs/SELECTOR_RESULTS.md) reach 20 unknown MD5
 bits and compare this approach with native tables and the BDD backend.
 
 Without explicit synthesis, nonlinear relations are saved as reusable Boolean
@@ -64,6 +64,12 @@ artifact contains the compiled inverse, not a suspended search, learned clauses,
 or an enumeration checkpoint.
 
 ## Build and run
+
+For constraints applied while constructing an algorithm, `partial_assert.h`
+provides `partial_assert_context::partial_assert` and `simplify` without using
+`program::compile`. See [the API and CRC32/MD5 checkpoint experiments](docs/PARTIAL_ASSERT.md).
+The separate `partial_assert_crc32` and `partial_assert_md5` executables compare
+early propagation with deferring the same constraints until construction ends.
 
 The current CMake configuration targets a GCC-compatible C++23 toolchain and
 requires CMake 3.25 or newer. For example, in a shell where GCC and Ninja are on
@@ -174,7 +180,44 @@ and `--conflict-learning` to enable CDCL with affine propagation disabled. These
 options control the search path; direct affine and synthesized inverses need no
 solver at query time.
 
+## Repository layout
+
+| Directory | Contents |
+|---|---|
+| [`include/`](include/) | Public headers and the `inverse/`, `solver/`, and `btree/` implementation headers |
+| [`src/`](src/) | Original bit-tracking and multiplication executables |
+| [`examples/`](examples/) | Inverse CLI, MD5 demo, and partial-assertion examples |
+| [`benchmarks/`](benchmarks/) | Benchmark executables and their native MD5 helper |
+| [`tests/`](tests/) | C++ tests and CMake CLI checks in `tests/cmake/` |
+| [`docs/`](docs/) | API notes, architecture, experiment reports, and exploration plans |
+| [`experiments/`](experiments/) | Recorded benchmark CSVs and unbuilt prototypes in `legacy/` |
+
+Start with the [solver architecture](docs/SOLVER.md) or the
+[partial-assertion API and experiments](docs/PARTIAL_ASSERT.md). Experiment reports
+cover [BDD synthesis](docs/SYNTHESIS_RESULTS.md),
+[compiled selectors](docs/SELECTOR_RESULTS.md),
+[counterexample-guided synthesis](docs/CEGIS_RESULTS.md), and
+[256-bit multiplication](docs/MULTIPLICATION_256_RESULTS.md).
+The [exploration plan](docs/EXPLORATION_PLAN.md) and
+[Manthan comparison proposal](docs/CEGIS_COMPARISON.md) describe future work.
+
 ## C++ API
+
+The library is header-only. Add `include/` to your compiler's include search path;
+header names remain unchanged, for example `#include "inverse.h"`. From the
+repository root, a standalone consumer can be compiled with:
+
+```sh
+g++ -std=c++23 -O3 -Iinclude path/to/consumer.cpp -o consumer
+```
+
+For CMake consumers, the `bitreverse_headers` interface target, also available
+as `bitreverse::headers`, supplies the include path and C++23 requirement:
+
+```cmake
+add_subdirectory(path/to/bitreverse)
+target_link_libraries(your_target PRIVATE bitreverse::headers)
+```
 
 Include `inverse.h` alongside the algorithm you want to specialize. The algorithm
 is ordinary C++ that operates on tracked values; it does not need an inverse
@@ -275,7 +318,7 @@ requires empty free bits; `solve` retains all preimages; and `export_cpp` emits
 the canonical selector plus forward check with no project dependencies.
 The CLI command is `synthesize-selector INPUT.bri OUTPUT.bri`, accepting positive
 `--max-assignments`, `--max-nodes`, `--max-operations`, and `--max-bytes` limits.
-See [the selector experiment](SELECTOR_RESULTS.md) for defaults, hard limits,
+See [the selector experiment](docs/SELECTOR_RESULTS.md) for defaults, hard limits,
 certification, and measured tradeoffs. Failed construction leaves its source
 and existing destination intact.
 
@@ -316,7 +359,7 @@ and `--max-nodes`. These budgets must be positive. Failed synthesis throws
 `cegis_limit` and leaves the source and destination intact. The learner is
 limited to its polynomial basis; failure is not evidence that the function has
 no compact inverse. Defaults, safety caps, certification and benchmark outcomes
-are documented in [the CEGIS experiment](CEGIS_RESULTS.md).
+are documented in [the CEGIS experiment](docs/CEGIS_RESULTS.md).
 
 Construction statistics also contain `phases` for `forward`, `relation`,
 `witness`, and `compaction`, with elapsed time, created/resident nodes, and nodes

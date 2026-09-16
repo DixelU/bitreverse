@@ -150,7 +150,7 @@ The eight-bit saved artifact remains byte-for-byte identical to the earlier
 artifact (SHA-256 checked), so the new evaluator also benefits existing saved
 programs. The next experiment is to construct selectors without materializing
 every forward-gate decision diagram, then validate candidates with the forward
-algorithm. [Raw benchmark output](experiments/synthesis-step1.csv).
+algorithm. [Raw benchmark output](../experiments/synthesis-step1.csv).
 
 ## Reproduce
 

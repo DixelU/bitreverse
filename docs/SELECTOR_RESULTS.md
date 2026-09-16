@@ -120,8 +120,8 @@ inverse_demo synthesize-selector md5-20-source.bri md5-20.bri --max-assignments=
 
 `selector_benchmark` runs the 8/10/12/16-bit cases. `selector_benchmark 20` runs
 only the ceiling experiment with its documented raised budgets. Raw results:
-[8–16 bits](experiments/synthesis-step2.csv),
-[20 bits](experiments/synthesis-step2-20bit.csv).
+[8–16 bits](../experiments/synthesis-step2.csv),
+[20 bits](../experiments/synthesis-step2-20bit.csv).
 
 The next experiment is counterexample-guided synthesis: search for small
 candidate functions and prove their correctness without first enumerating every

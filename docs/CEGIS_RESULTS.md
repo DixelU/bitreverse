@@ -83,9 +83,9 @@ Equal Boolean operation counts therefore do not imply equal measured runtime.
 Timing samples are short and sensitive to host load; sizes and work counts are
 the stronger reproducible results here. No process memory peak was measured.
 
-Raw data: [default budgets](experiments/synthesis-step3.csv),
-[raised solver budget](experiments/synthesis-step3-20m.csv),
-[before XOR normalization](experiments/synthesis-step3-before-xor.csv).
+Raw data: [default budgets](../experiments/synthesis-step3.csv),
+[raised solver budget](../experiments/synthesis-step3-20m.csv),
+[before XOR normalization](../experiments/synthesis-step3-before-xor.csv).
 
 ## Controls and limits
 

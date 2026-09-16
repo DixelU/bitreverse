@@ -1,7 +1,8 @@
 # Solver architecture
 
-`bitreverse.h` remains the public umbrella header. The headers in this
-directory split the internal solver implementation by responsibility:
+[`bitreverse.h`](../include/bitreverse.h) remains the public umbrella header.
+The headers in [`include/solver/`](../include/solver/) split the internal solver
+implementation by responsibility:
 
 - `options.h` and `statistics.h` define the public configuration and metrics.
 - `compiled_circuit.h` assigns dense IDs and builds input/parent adjacency.
