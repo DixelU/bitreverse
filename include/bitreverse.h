@@ -439,6 +439,74 @@ constexpr bit_tracker execute_ternary_operation(
 	return ((!source) & val2) | (source & val1);
 }
 
+namespace details
+{
+
+// Brent-Kung scan of carry transforms, ordered least significant bit first.
+// (G2, P2) composed with (G1, P1) is (G2 | P2&G1, P2&P1).
+// The up/down sweeps use linear work and logarithmic dependency depth, also
+// for widths that are not powers of two.
+template<typename Bits>
+constexpr void prefix_carries(Bits& generate, Bits& propagate)
+{
+	const auto combine = [&](size_t upper, size_t lower)
+	{
+		generate[upper] |= propagate[upper] & generate[lower];
+		propagate[upper] &= propagate[lower];
+	};
+	size_t stride = 1;
+	for (; stride < generate.size(); stride *= 2)
+		for (size_t i = 2 * stride - 1; i < generate.size(); i += 2 * stride)
+			combine(i, i - stride);
+	for (stride /= 4; stride; stride /= 2)
+		for (size_t i = 3 * stride - 1; i < generate.size(); i += 2 * stride)
+			combine(i, i - stride);
+}
+
+// Works with fixed arrays for integer addition and with a narrow dynamic
+// word for constant division. Public integer bit storage is MSB first.
+template<typename Bits>
+constexpr void add_bits_with_carry(Bits& lhs, const Bits& rhs, bit_tracker& carry)
+{
+	const size_t count = lhs.size();
+	if (!count) return;
+	bool concrete = carry.bit_state->operation == '=';
+	for (size_t i = 0; concrete && i < count; ++i)
+		concrete = lhs[i].bit_state->operation == '=' &&
+			rhs[i].bit_state->operation == '=';
+	if (concrete)
+	{
+		bool next = carry.bit_state->state;
+		for (size_t i = count; i-- > 0;)
+		{
+			const unsigned sum = lhs[i].bit_state->state + rhs[i].bit_state->state + next;
+			lhs[i] = bool(sum & 1);
+			next = sum > 1;
+		}
+		carry = next;
+		return;
+	}
+
+	// Read every operand before writing lhs, including for x += x.
+	auto propagate = lhs;
+	auto generate = lhs;
+	for (size_t i = 0; i < count; ++i)
+	{
+		propagate[i] = lhs[count - 1 - i] ^ rhs[count - 1 - i];
+		generate[i] = lhs[count - 1 - i] & rhs[count - 1 - i];
+	}
+	const auto sum_propagate = propagate;
+	const auto carry_in = carry;
+	generate[0] |= propagate[0] & carry_in;
+	propagate[0] = false; // The first group already includes the input carry.
+	prefix_carries(generate, propagate);
+	for (size_t i = 0; i < count; ++i)
+		lhs[count - 1 - i] = sum_propagate[i] ^ (i ? generate[i - 1] : carry_in);
+	carry = generate.back();
+}
+
+} // namespace details
+
 template <size_t N>
 struct int_tracker
 {
@@ -689,18 +757,7 @@ struct int_tracker
 
 	constexpr self_type& self_add_ret_carry(ref_handler<self_type> rhs, bit_tracker& carry)
 	{
-		for (size_t i = 0; i < N; ++i)
-		{
-			auto& lhs_bit = bits[N - 1 - i];
-			auto& rhs_bit = rhs.ref.bits[N - 1 - i];
-
-			auto propagate = lhs_bit ^ rhs_bit;
-			auto sum = propagate ^ carry;
-			carry =
-				(lhs_bit & rhs_bit) |
-				(carry & propagate);
-			lhs_bit = std::move(sum);
-		}
+		details::add_bits_with_carry(bits, rhs.ref.bits, carry);
 		return *this;
 	}
 
@@ -713,22 +770,10 @@ struct int_tracker
 	constexpr self_type& self_sub_ret_carry(const self_type& rhs, bit_tracker& carry)
 	{
 		// carry is an output: true means the unsigned subtraction did not
-		// underflow, matching the contract used by divmod().
-		bit_tracker borrow = false;
-		for (size_t i = 0; i < N; ++i)
-		{
-			auto& lhs_bit = bits[N - 1 - i];
-			const auto& rhs_bit = rhs.bits[N - 1 - i];
-
-			auto difference = lhs_bit ^ rhs_bit ^ borrow;
-			borrow =
-				((!lhs_bit) & (rhs_bit | borrow)) |
-				(rhs_bit & borrow);
-			lhs_bit = std::move(difference);
-		}
-
-		carry = !borrow;
-		return *this;
+		// underflow. Subtraction is lhs + ~rhs + 1 with the same prefix scan.
+		const auto complement = ~rhs;
+		carry = true;
+		return self_add_ret_carry(complement, carry);
 	}
 
 	constexpr self_type& operator-=(const self_type& rhs)
@@ -759,81 +804,163 @@ struct int_tracker
 
 	constexpr self_type& operator*=(const self_type& rhs)
 	{
-		self_type result{};
-		self_type shifted = *this;
-
-		for (size_t i = 0; i < N; ++i)
+		const auto nonzero_bits = [](const self_type& value)
 		{
-			result = __execute_ternary_assign(
-				rhs.bits[N - i - 1],
-				result + shifted,
-				result);
-			shifted <<= 1;
+			size_t count = 0;
+			for (const auto& bit : value.bits)
+				count += bit.bit_state->operation != '=' || bit.bit_state->state;
+			return count;
+		};
+		const self_type* multiplicand = this;
+		const self_type* multiplier = &rhs;
+		if (nonzero_bits(*this) < nonzero_bits(rhs))
+			std::swap(multiplicand, multiplier);
+
+		std::vector<self_type> rows;
+		rows.reserve(nonzero_bits(*multiplier));
+		for (size_t shift = 0; shift < N; ++shift)
+		{
+			const auto& selector = multiplier->bits[N - 1 - shift];
+			if (selector.bit_state->operation == '=' && !selector.bit_state->state)
+				continue;
+			self_type row;
+			for (size_t i = 0; i < N - shift; ++i)
+				row.bits[i] = multiplicand->bits[i + shift] & selector;
+			rows.push_back(std::move(row));
 		}
 
-		return (*this = std::move(result));
+		// Three rows become two without propagating carries horizontally.
+		// Overflow above bit N-1 is deliberately discarded (modulo 2^N).
+		while (rows.size() > 2)
+		{
+			std::vector<self_type> next;
+			next.reserve(rows.size() - rows.size() / 3);
+			size_t row = 0;
+			for (; row + 2 < rows.size(); row += 3)
+			{
+				self_type sum, carry;
+				for (size_t i = 0; i < N; ++i)
+				{
+					const auto ab = rows[row].bits[i] ^ rows[row + 1].bits[i];
+					sum.bits[i] = ab ^ rows[row + 2].bits[i];
+					if (i)
+						carry.bits[i - 1] = (rows[row].bits[i] & rows[row + 1].bits[i]) |
+							(rows[row + 2].bits[i] & ab);
+				}
+				next.push_back(std::move(sum));
+				next.push_back(std::move(carry));
+			}
+			for (; row < rows.size(); ++row)
+				next.push_back(std::move(rows[row]));
+			rows = std::move(next);
+		}
+		if (rows.empty()) return *this = self_type{};
+		if (rows.size() == 2) rows[0] += rows[1];
+		return *this = std::move(rows[0]);
 	}
 
 	constexpr self_type divmod(const self_type& divisor, self_type& remainder) const
 	{
-		int_tracker<N + 1> partial_remainder{};
-		const int_tracker<N + 1> extended_divisor{divisor};
 		self_type quotient{};
+		bool constant_divisor = true;
+		size_t divisor_width = 0, divisor_ones = 0;
+		for (size_t i = 0; i < N; ++i)
+		{
+			if (divisor.bits[i].bit_state->operation != '=')
+			{
+				constant_divisor = false;
+				break;
+			}
+			if (divisor.bits[i].bit_state->state)
+			{
+				if (!divisor_width) divisor_width = N - i;
+				++divisor_ones;
+			}
+		}
+		if (constant_divisor && !divisor_width)
+		{
+			// Preserve the existing total bit-vector division semantics.
+			for (auto& bit : quotient.bits) bit = true;
+			remainder = *this;
+			return quotient;
+		}
+		if (constant_divisor && divisor_ones == 1)
+		{
+			const size_t shift = divisor_width - 1;
+			quotient = *this >> shift;
+			self_type low_bits;
+			for (size_t i = N - shift; i < N; ++i) low_bits.bits[i] = bits[i];
+			remainder = std::move(low_bits);
+			return quotient;
+		}
 
-		for (size_t dividend_bit = 0;
+		// Known leading zeroes need no arithmetic iterations. For an unknown
+		// divisor the skipped quotient bits must still be one when D == 0.
+		size_t first_bit = 0;
+		while (first_bit < N && bits[first_bit].bit_state->operation == '=' &&
+			!bits[first_bit].bit_state->state) ++first_bit;
+		if (first_bit && !constant_divisor)
+		{
+			auto nonzero = divisor.bits;
+			for (size_t stride = 1; stride < N; stride *= 2)
+				for (size_t i = 0; i + stride < N; i += 2 * stride)
+					nonzero[i] |= nonzero[i + stride];
+			const auto is_zero = !nonzero[0];
+			for (size_t i = 0; i < first_bit; ++i) quotient.bits[i] = is_zero;
+		}
+
+		// Non-restoring remainders lie in [-D, D). A fixed divisor therefore
+		// needs only its significant bits plus a sign bit, at any tracker width.
+		const size_t width = constant_divisor ? divisor_width : N;
+		std::vector<bit_tracker> partial_remainder(width + 1), extended_divisor(width + 1);
+		for (size_t i = 0; i < width; ++i)
+			extended_divisor[i + 1] = divisor.bits[N - width + i];
+
+		for (size_t dividend_bit = first_bit;
 			dividend_bit < N;
 			++dividend_bit)
 		{
-			const auto was_negative = partial_remainder.bits[0];
-			partial_remainder <<= 1;
-			partial_remainder.bits[N] = bits[dividend_bit];
+			const auto was_negative = partial_remainder[0];
+			for (size_t i = 0; i < width; ++i)
+				partial_remainder[i] = std::move(partial_remainder[i + 1]);
+			partial_remainder[width] = bits[dividend_bit];
 
 			// A non-negative partial remainder subtracts the divisor; a
 			// negative one adds it. XOR supplies either D or ~D, and the
 			// initial carry supplies the +1 required for subtraction.
 			const auto invert_divisor = !was_negative;
 			auto carry = invert_divisor;
-			for (size_t offset = 0; offset <= N; ++offset)
-			{
-				const size_t i = N - offset;
-				auto operand =
-					extended_divisor.bits[i] ^ invert_divisor;
-				auto propagate =
-					partial_remainder.bits[i] ^ operand;
-				auto sum = propagate ^ carry;
-				carry =
-					(partial_remainder.bits[i] & operand) |
-					(carry & propagate);
-				partial_remainder.bits[i] = std::move(sum);
-			}
-
-			quotient.bits[dividend_bit] =
-				!partial_remainder.bits[0];
+			auto operand = extended_divisor;
+			for (auto& bit : operand) bit ^= invert_divisor;
+			details::add_bits_with_carry(partial_remainder, operand, carry);
+			quotient.bits[dividend_bit] = !partial_remainder[0];
 		}
 
-		const auto is_negative = partial_remainder.bits[0];
+		self_type restored;
+		const auto is_negative = partial_remainder[0];
 		if (is_negative.bit_state->operation == '=')
 		{
 			if (is_negative.bit_state->state)
-				partial_remainder += extended_divisor;
-			remainder = self_type{partial_remainder};
+			{
+				bit_tracker carry = false;
+				details::add_bits_with_carry(partial_remainder, extended_divisor, carry);
+			}
+			for (size_t i = 0; i < width; ++i)
+				restored.bits[N - width + i] = partial_remainder[i + 1];
 		}
 		else
 		{
-			const auto corrected_remainder =
-				partial_remainder + extended_divisor;
-			for (size_t i = 0; i < N; ++i)
+			auto corrected_remainder = partial_remainder;
+			bit_tracker carry = false;
+			details::add_bits_with_carry(corrected_remainder, extended_divisor, carry);
+			for (size_t i = 0; i < width; ++i)
 			{
-				const auto& uncorrected =
-					partial_remainder.bits[i + 1];
-				remainder.bits[i] =
-					uncorrected ^
-					(is_negative &
-						(corrected_remainder.bits[i + 1] ^
-							uncorrected));
+				const auto& uncorrected = partial_remainder[i + 1];
+				restored.bits[N - width + i] = uncorrected ^
+					(is_negative & (corrected_remainder[i + 1] ^ uncorrected));
 			}
 		}
-
+		remainder = std::move(restored);
 		return quotient;
 	}
 

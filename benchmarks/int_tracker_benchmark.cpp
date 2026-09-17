@@ -16,6 +16,7 @@ volatile std::uint64_t sink_value = 0;
 // Timings are informational because they vary by machine. The symbolic
 // benchmarks also enforce deterministic upper bounds on retained DAG nodes
 // and expression depth, which makes the executable suitable for CTest.
+// Prefix arithmetic trades additional gates for shorter carry dependencies.
 // Functions named "prototype" are comparison implementations for the
 // optimization opportunities identified by this benchmark.
 
@@ -219,32 +220,32 @@ int main()
 	symbolic_benchmark(
 		"symbolic add",
 		50000,
-		154,
-		63,
+		220,
+		19,
 		[](const auto& x, const auto& y) { return x + y; });
 	symbolic_benchmark(
 		"symbolic subtract",
 		25000,
-		215,
-		94,
+		254,
+		21,
 		[](const auto& x, const auto& y) { return x - y; });
 	symbolic_benchmark(
 		"symbolic multiply",
 		2000,
-		6296,
-		183,
+		2997,
+		37,
 		[](const auto& x, const auto& y) { return x * y; });
 	symbolic_benchmark(
 		"symbolic divide",
 		500,
-		6141,
-		2143,
+		8533,
+		505,
 		[](const auto& x, const auto& y) { return x / y; });
 	symbolic_benchmark(
 		"restore divide prototype",
 		500,
-		9678,
-		3042,
+		11110,
+		472,
 		[](const auto& x, const auto& y)
 		{
 			return conditional_restore_divide(x, y);
@@ -252,8 +253,8 @@ int main()
 	symbolic_benchmark(
 		"symbolic remainder",
 		500,
-		6392,
-		2145,
+		8902,
+		524,
 		[](const auto& x, const auto& y) { return x % y; });
 	symbolic_benchmark(
 		"symbolic variable shift",

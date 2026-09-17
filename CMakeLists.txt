@@ -66,6 +66,11 @@ target_link_libraries(int_tracker_benchmark PRIVATE bitreverse::headers)
 target_compile_options(int_tracker_benchmark PUBLIC -Wall -Wextra -Wuninitialized -pedantic -fstack-protector-all -O3 -ggdb)
 target_link_options(int_tracker_benchmark PRIVATE -static-libgcc -static-libstdc++ -static)
 
+add_executable(arithmetic_circuit_benchmark benchmarks/arithmetic_circuit_benchmark.cpp)
+target_link_libraries(arithmetic_circuit_benchmark PRIVATE bitreverse::headers)
+target_compile_options(arithmetic_circuit_benchmark PRIVATE -Wall -Wextra -pedantic -O3)
+target_link_options(arithmetic_circuit_benchmark PRIVATE -static-libgcc -static-libstdc++ -static)
+
 include(CTest)
 
 if(BUILD_TESTING)
@@ -77,7 +82,7 @@ if(BUILD_TESTING)
         set_tests_properties(${partial_assert_target} PROPERTIES TIMEOUT 60)
     endforeach()
 
-    foreach(test_target solver_budget_tests cegis_tests multiplication_reversal_tests sha_tests circuit_metrics_tests)
+    foreach(test_target solver_budget_tests cegis_tests multiplication_reversal_tests sha_tests circuit_metrics_tests arithmetic_tests)
         add_executable(${test_target} tests/${test_target}.cpp)
         target_link_libraries(${test_target} PRIVATE bitreverse::headers)
         target_compile_options(${test_target} PRIVATE -Wall -Wextra -pedantic -O3)
@@ -182,6 +187,7 @@ if(BUILD_TESTING)
             multiplication_reversal_tests
             sha_tests
             circuit_metrics_tests
+            arithmetic_tests
             buffered_object_pool_tests
             bitreverse_tests
             inverse_tests

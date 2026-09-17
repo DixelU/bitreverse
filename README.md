@@ -4,6 +4,11 @@
 produce a requested output. `int_tracker<N>` follows fixed-width bit operations;
 ordinary values become constants, while `unknown` creates symbolic input bits.
 
+Arithmetic uses parallel-prefix carries and carry-save multiplication to reduce
+dependency depth. Division specializes constant divisors and skips known leading
+zero dividend bits. See [the arithmetic circuit measurements](docs/ARITHMETIC_CIRCUITS.md)
+for the depth/gate-count tradeoffs, division-by-zero behavior, and validation.
+
 The reusable inverse API in `inverse.h` separates **building an inverse** from
 **using it on new outputs**. Known input bits and algorithm parameters are baked
 into the tracked computation before compilation, so constant folding and Boolean
