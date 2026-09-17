@@ -20,9 +20,9 @@ bool verify_private_key(const uint_arbitrary_t<Bits>& private_key, const ECPoint
 
 			std::cout << "=== SOLUTION " << counter << " ===" << std::endl;
 
-			for (auto single_char : private_key.bits)
+			for (const auto& single_char : private_key.bits)
 			{
-				bool val = solution.assignments.at(single_char.bit_state);
+				const bool val = solution.assignments.at(single_char.bit_state);
 				std::cout << (val ? '1' : '0');
 			}
 			std::cout << std::endl;
@@ -33,8 +33,8 @@ bool verify_private_key(const uint_arbitrary_t<Bits>& private_key, const ECPoint
 
 int main()
 {
-	uint_arbitrary_t<256> private_key = dixelu::bitreverse::unknown;
-	
+	const uint_arbitrary_t<256> private_key = dixelu::bitreverse::unknown;
+
 	// Example Public Key X and Y
 	// You should replace these with your actual target point components
 	ECPoint<256> target_pub;

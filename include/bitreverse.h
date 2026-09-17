@@ -40,10 +40,13 @@ struct bitstate
 
 #ifndef WITHOUT_DEPTH_TRACKING
 	size_t max_depth : 56 {0};
-#endif
-
 	size_t state : 1 {0};
 	size_t operation : 7 {'='};
+#else
+	uint8_t state : 1 {0};
+	uint8_t operation : 7 {'='};
+#endif
+
 };
 
 constexpr std::pair<bool, char> extract_value_and_operation(std::uint8_t opcode)
@@ -85,16 +88,14 @@ inline const counted_ptr<bitstate>& runtime_boolean_constant(bool value)
 	return value ? true_state : false_state;
 }
 
-constexpr counted_ptr<bitstate> make_boolean_constant(bool value)
+constexpr counted_ptr<bitstate> make_boolean_constant(const bool value)
 {
 	if consteval
 	{
 		return make_fresh_boolean_constant(value);
 	}
-	else
-	{
-		return runtime_boolean_constant(value);
-	}
+
+	return runtime_boolean_constant(value);
 }
 
 constexpr counted_ptr<bitstate> make_bitstate_operation(
@@ -220,7 +221,7 @@ constexpr bool __call_optimisers(
 }
 
 constexpr counted_ptr<bitstate> make_bitstate_operation(
-	std::uint8_t opcode,
+	const std::uint8_t opcode,
 	const counted_ptr<bitstate>& val1,
 	const counted_ptr<bitstate>& val2)
 {
@@ -454,10 +455,12 @@ constexpr void prefix_carries(Bits& generate, Bits& propagate)
 		generate[upper] |= propagate[upper] & generate[lower];
 		propagate[upper] &= propagate[lower];
 	};
+
 	size_t stride = 1;
 	for (; stride < generate.size(); stride *= 2)
 		for (size_t i = 2 * stride - 1; i < generate.size(); i += 2 * stride)
 			combine(i, i - stride);
+
 	for (stride /= 4; stride; stride /= 2)
 		for (size_t i = 3 * stride - 1; i < generate.size(); i += 2 * stride)
 			combine(i, i - stride);
@@ -469,20 +472,23 @@ template<typename Bits>
 constexpr void add_bits_with_carry(Bits& lhs, const Bits& rhs, bit_tracker& carry)
 {
 	const size_t count = lhs.size();
-	if (!count) return;
+	if (!count)
+		return;
+
 	bool concrete = carry.bit_state->operation == '=';
 	for (size_t i = 0; concrete && i < count; ++i)
-		concrete = lhs[i].bit_state->operation == '=' &&
-			rhs[i].bit_state->operation == '=';
+		concrete = lhs[i].bit_state->operation == '=' && rhs[i].bit_state->operation == '=';
+
 	if (concrete)
 	{
 		bool next = carry.bit_state->state;
 		for (size_t i = count; i-- > 0;)
 		{
 			const unsigned sum = lhs[i].bit_state->state + rhs[i].bit_state->state + next;
-			lhs[i] = bool(sum & 1);
+			lhs[i] = static_cast<bool>(sum & 1);
 			next = sum > 1;
 		}
+
 		carry = next;
 		return;
 	}
@@ -490,18 +496,23 @@ constexpr void add_bits_with_carry(Bits& lhs, const Bits& rhs, bit_tracker& carr
 	// Read every operand before writing lhs, including for x += x.
 	auto propagate = lhs;
 	auto generate = lhs;
+
 	for (size_t i = 0; i < count; ++i)
 	{
 		propagate[i] = lhs[count - 1 - i] ^ rhs[count - 1 - i];
 		generate[i] = lhs[count - 1 - i] & rhs[count - 1 - i];
 	}
+
 	const auto sum_propagate = propagate;
 	const auto carry_in = carry;
+
 	generate[0] |= propagate[0] & carry_in;
 	propagate[0] = false; // The first group already includes the input carry.
+
 	prefix_carries(generate, propagate);
 	for (size_t i = 0; i < count; ++i)
 		lhs[count - 1 - i] = sum_propagate[i] ^ (i ? generate[i - 1] : carry_in);
+
 	carry = generate.back();
 }
 

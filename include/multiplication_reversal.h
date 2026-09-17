@@ -3,6 +3,8 @@
 #include <cstddef>
 #include <string>
 
+#include <atomic>
+
 #include "bitreverse.h"
 
 using namespace dixelu::bitreverse;
@@ -16,14 +18,14 @@ template<std::size_t Bits>
 uint_arbitrary_t<Bits> from_hex(const std::string& hex)
 {
 	uint_arbitrary_t<Bits> res(0);
-	for (char c : hex)
+	for (const char c : hex)
 	{
 		res <<= 4;
 		if (c >= '0' && c <= '9') res |= uint_arbitrary_t<Bits>(c - '0');
 		else if (c >= 'a' && c <= 'f') res |= uint_arbitrary_t<Bits>(c - 'a' + 10);
 		else if (c >= 'A' && c <= 'F') res |= uint_arbitrary_t<Bits>(c - 'A' + 10);
 	}
-	
+
 	return res;
 }
 
@@ -37,9 +39,9 @@ struct ECPoint
 
 	bit_tracker operator==(const ECPoint& other) const
 	{
-		bit_tracker both_inf = is_infinity & other.is_infinity;
-		bit_tracker neither_inf = (!is_infinity) & (!other.is_infinity);
-		bit_tracker coords_match =
+		const bit_tracker both_inf = is_infinity & other.is_infinity;
+		const bit_tracker neither_inf = (!is_infinity) & (!other.is_infinity);
+		const bit_tracker coords_match =
 			uint_arbitrary_t<Bits>::are_equal(x, other.x) &
 				uint_arbitrary_t<Bits>::are_equal(y, other.y);
 
@@ -117,7 +119,7 @@ uint_arbitrary_t<Bits> mod_subtract(
 	return uint_arbitrary_t<Bits>::__execute_ternary_assign(no_underflow, difference, difference + m);
 }
 
-inline bool is_known_bit(const bit_tracker& bit, bool value)
+inline bool is_known_bit(const bit_tracker& bit, const bool value)
 {
 	return bit.bit_state->operation == '=' &&
 		static_cast<bool>(bit.bit_state->state) == value;
@@ -144,7 +146,7 @@ uint_arbitrary_t<Bits> mod_inverse(const uint_arbitrary_t<Bits>& a, const uint_a
 	uint_arbitrary_t<Bits> base = a % m;
 	uint_arbitrary_t<Bits> exp = m - uint_arbitrary_t<Bits>(2);
 
-	for (volatile size_t i = 0; i < Bits; ++i)
+	for (std::atomic<size_t> i = 0; i < Bits; ++i)
 	{
 		res = mod_multiply(res, res, m);
 
@@ -236,12 +238,15 @@ ECPoint<Bits> ec_multiply(const uint_arbitrary_t<Bits>& scalar, ECPoint<Bits> ba
 	while (first_bit < Bits && is_known_bit(scalar.bits[first_bit], false))
 		++first_bit;
 
-	for (volatile size_t i = Bits; i-- > first_bit;)
+	for (std::atomic<size_t> i = Bits; i-- > first_bit;)
 	{
 		// LSB first here: current_base carries the increasing power of two.
+		//
+		// ReSharper disable once CppTooWideScopeInitStatement
 		const auto& bit = scalar.bits[i];
 		if (!is_known_bit(bit, false))
 			result = select_point(bit, ec_add(result, current_base), result);
+
 		if (i > first_bit)
 			current_base = ec_double(current_base);
 	}
