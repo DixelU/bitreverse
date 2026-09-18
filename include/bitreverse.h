@@ -4,6 +4,7 @@
 #include <map>
 #include <deque>
 #include <array>
+#include <span>
 #include <algorithm>
 #include <bit>
 #include <functional>
@@ -417,6 +418,12 @@ struct bit_tracker
 	}
 };
 
+template<size_t N>
+struct int_tracker;
+
+template<size_t N>
+class prepared_divisor;
+
 template<typename T, bool _const = true>
 struct ref_handler
 {
@@ -466,44 +473,45 @@ constexpr void prefix_carries(Bits& generate, Bits& propagate)
 			combine(i, i - stride);
 }
 
-// Works with fixed arrays for integer addition and with a narrow dynamic
-// word for constant division. Public integer bit storage is MSB first.
-template<typename Bits>
-constexpr void add_bits_with_carry(Bits& lhs, const Bits& rhs, bit_tracker& carry)
+// Public integer bit storage is MSB first. The scratch overload lets narrow
+// division views reuse fixed-capacity stack buffers without allocating.
+template<typename LhsBits, typename RhsBits>
+constexpr bool try_add_concrete_bits_with_carry(
+	LhsBits& lhs,
+	const RhsBits& rhs,
+	bit_tracker& carry)
 {
 	const size_t count = lhs.size();
 	if (!count)
-		return;
+		return true;
 
 	bool concrete = carry.bit_state->operation == '=';
 	for (size_t i = 0; concrete && i < count; ++i)
 		concrete = lhs[i].bit_state->operation == '=' && rhs[i].bit_state->operation == '=';
 
-	if (concrete)
+	if (!concrete)
+		return false;
+
+	bool next = carry.bit_state->state;
+	for (size_t i = count; i-- > 0;)
 	{
-		bool next = carry.bit_state->state;
-		for (size_t i = count; i-- > 0;)
-		{
-			const unsigned sum = lhs[i].bit_state->state + rhs[i].bit_state->state + next;
-			lhs[i] = static_cast<bool>(sum & 1);
-			next = sum > 1;
-		}
-
-		carry = next;
-		return;
+		const unsigned sum = lhs[i].bit_state->state + rhs[i].bit_state->state + next;
+		lhs[i] = static_cast<bool>(sum & 1);
+		next = sum > 1;
 	}
+	carry = next;
+	return true;
+}
 
-	// Read every operand before writing lhs, including for x += x.
-	auto propagate = lhs;
-	auto generate = lhs;
-
-	for (size_t i = 0; i < count; ++i)
-	{
-		propagate[i] = lhs[count - 1 - i] ^ rhs[count - 1 - i];
-		generate[i] = lhs[count - 1 - i] & rhs[count - 1 - i];
-	}
-
-	const auto sum_propagate = propagate;
+template<typename Bits, typename ScratchBits, typename SumBits>
+constexpr void finish_symbolic_bits_with_carry(
+	Bits& lhs,
+	bit_tracker& carry,
+	ScratchBits& propagate,
+	ScratchBits& generate,
+	const SumBits& sum_propagate)
+{
+	const size_t count = lhs.size();
 	const auto carry_in = carry;
 
 	generate[0] |= propagate[0] & carry_in;
@@ -516,7 +524,118 @@ constexpr void add_bits_with_carry(Bits& lhs, const Bits& rhs, bit_tracker& carr
 	carry = generate.back();
 }
 
+template<typename LhsBits, typename RhsBits>
+constexpr void add_bits_with_carry(
+	LhsBits& lhs,
+	const RhsBits& rhs,
+	bit_tracker& carry)
+{
+	if (try_add_concrete_bits_with_carry(lhs, rhs, carry))
+		return;
+
+	// Copies are fixed arrays for ordinary int_tracker addition.
+	auto propagate = lhs;
+	auto generate = lhs;
+	for (size_t i = 0; i < lhs.size(); ++i)
+	{
+		propagate[i] = lhs[lhs.size() - 1 - i] ^ rhs[lhs.size() - 1 - i];
+		generate[i] = lhs[lhs.size() - 1 - i] & rhs[lhs.size() - 1 - i];
+	}
+	const auto sum_propagate = propagate;
+	finish_symbolic_bits_with_carry(lhs, carry, propagate, generate, sum_propagate);
+}
+
+template<typename LhsBits, typename RhsBits, typename ScratchBits>
+constexpr void add_bits_with_carry(
+	LhsBits& lhs,
+	const RhsBits& rhs,
+	bit_tracker& carry,
+	ScratchBits& propagate,
+	ScratchBits& generate,
+	ScratchBits& sum_propagate)
+{
+	if (try_add_concrete_bits_with_carry(lhs, rhs, carry))
+		return;
+
+	for (size_t i = 0; i < lhs.size(); ++i)
+	{
+		propagate[i] = lhs[lhs.size() - 1 - i] ^ rhs[lhs.size() - 1 - i];
+		generate[i] = lhs[lhs.size() - 1 - i] & rhs[lhs.size() - 1 - i];
+		sum_propagate[i] = propagate[i];
+	}
+
+	finish_symbolic_bits_with_carry(lhs, carry, propagate, generate, sum_propagate);
+}
+
+enum class divisor_kind
+{
+	symbolic,
+	zero,
+	power_of_two,
+	constant
+};
+
+template<size_t N>
+struct divisor_profile
+{
+	divisor_kind classification = divisor_kind::zero;
+	size_t width = 0;
+	std::array<bit_tracker, N + 1> extended;
+
+	constexpr explicit divisor_profile(const std::array<bit_tracker, N>& bits)
+	{
+		size_t ones = 0;
+		for (size_t i = 0; i < N; ++i)
+		{
+			if (bits[i].bit_state->operation != '=')
+			{
+				classification = divisor_kind::symbolic;
+				width = N;
+				for (size_t bit = 0; bit < N; ++bit)
+					extended[bit + 1] = bits[bit];
+				return;
+			}
+			if (bits[i].bit_state->state)
+			{
+				if (!width)
+					width = N - i;
+				++ones;
+			}
+		}
+
+		classification = !width
+			? divisor_kind::zero
+			: ones == 1
+				? divisor_kind::power_of_two
+				: divisor_kind::constant;
+		for (size_t i = 0; i < width; ++i)
+			extended[i + 1] = bits[N - width + i];
+	}
+
+	[[nodiscard]] constexpr bool is_constant() const
+	{
+		return classification != divisor_kind::symbolic;
+	}
+};
+
 } // namespace details
+
+template<size_t N>
+class prepared_divisor
+{
+	details::divisor_profile<N> profile_;
+
+	friend struct int_tracker<N>;
+
+public:
+	explicit constexpr prepared_divisor(const int_tracker<N>& divisor);
+
+	[[nodiscard]] constexpr int_tracker<N> divide(const int_tracker<N>& dividend) const;
+	[[nodiscard]] constexpr int_tracker<N> modulo(const int_tracker<N>& dividend) const;
+	[[nodiscard]] constexpr int_tracker<N> divmod(
+		const int_tracker<N>& dividend,
+		int_tracker<N>& remainder) const;
+};
 
 template <size_t N>
 struct int_tracker
@@ -822,13 +941,15 @@ struct int_tracker
 				count += bit.bit_state->operation != '=' || bit.bit_state->state;
 			return count;
 		};
+
 		const self_type* multiplicand = this;
 		const self_type* multiplier = &rhs;
 		if (nonzero_bits(*this) < nonzero_bits(rhs))
 			std::swap(multiplicand, multiplier);
 
+		const size_t row_count = nonzero_bits(*multiplier);
 		std::vector<self_type> rows;
-		rows.reserve(nonzero_bits(*multiplier));
+		rows.reserve(row_count);
 		for (size_t shift = 0; shift < N; ++shift)
 		{
 			const auto& selector = multiplier->bits[N - 1 - shift];
@@ -842,11 +963,10 @@ struct int_tracker
 
 		// Three rows become two without propagating carries horizontally.
 		// Overflow above bit N-1 is deliberately discarded (modulo 2^N).
+		// Each group is fully consumed before its outputs overwrite earlier rows.
 		while (rows.size() > 2)
 		{
-			std::vector<self_type> next;
-			next.reserve(rows.size() - rows.size() / 3);
-			size_t row = 0;
+			size_t row = 0, write = 0;
 			for (; row + 2 < rows.size(); row += 3)
 			{
 				self_type sum, carry;
@@ -858,51 +978,47 @@ struct int_tracker
 						carry.bits[i - 1] = (rows[row].bits[i] & rows[row + 1].bits[i]) |
 							(rows[row + 2].bits[i] & ab);
 				}
-				next.push_back(std::move(sum));
-				next.push_back(std::move(carry));
+				rows[write++] = std::move(sum);
+				rows[write++] = std::move(carry);
 			}
 			for (; row < rows.size(); ++row)
-				next.push_back(std::move(rows[row]));
-			rows = std::move(next);
+				rows[write++] = std::move(rows[row]);
+			rows.resize(write);
 		}
 		if (rows.empty()) return *this = self_type{};
 		if (rows.size() == 2) rows[0] += rows[1];
 		return *this = std::move(rows[0]);
 	}
 
-	constexpr self_type divmod(const self_type& divisor, self_type& remainder) const
+	constexpr void divide_profile(
+		const details::divisor_profile<N>& divisor,
+		self_type* quotient,
+		self_type* remainder) const
 	{
-		self_type quotient{};
-		bool constant_divisor = true;
-		size_t divisor_width = 0, divisor_ones = 0;
-		for (size_t i = 0; i < N; ++i)
-		{
-			if (divisor.bits[i].bit_state->operation != '=')
-			{
-				constant_divisor = false;
-				break;
-			}
-			if (divisor.bits[i].bit_state->state)
-			{
-				if (!divisor_width) divisor_width = N - i;
-				++divisor_ones;
-			}
-		}
-		if (constant_divisor && !divisor_width)
+		if (divisor.classification == details::divisor_kind::zero)
 		{
 			// Preserve the existing total bit-vector division semantics.
-			for (auto& bit : quotient.bits) bit = true;
-			remainder = *this;
-			return quotient;
+			if (quotient)
+				for (auto& bit : quotient->bits)
+					bit = true;
+			if (remainder)
+				*remainder = *this;
+			return;
 		}
-		if (constant_divisor && divisor_ones == 1)
+
+		if (divisor.classification == details::divisor_kind::power_of_two)
 		{
-			const size_t shift = divisor_width - 1;
-			quotient = *this >> shift;
-			self_type low_bits;
-			for (size_t i = N - shift; i < N; ++i) low_bits.bits[i] = bits[i];
-			remainder = std::move(low_bits);
-			return quotient;
+			const size_t shift = divisor.width - 1;
+			if (quotient)
+				*quotient = *this >> shift;
+			if (remainder)
+			{
+				self_type low_bits;
+				for (size_t i = N - shift; i < N; ++i)
+					low_bits.bits[i] = bits[i];
+				*remainder = std::move(low_bits);
+			}
+			return;
 		}
 
 		// Known leading zeroes need no arithmetic iterations. For an unknown
@@ -910,22 +1026,37 @@ struct int_tracker
 		size_t first_bit = 0;
 		while (first_bit < N && bits[first_bit].bit_state->operation == '=' &&
 			!bits[first_bit].bit_state->state) ++first_bit;
-		if (first_bit && !constant_divisor)
+
+		if (first_bit && quotient && !divisor.is_constant())
 		{
-			auto nonzero = divisor.bits;
+			auto nonzero = divisor.extended;
 			for (size_t stride = 1; stride < N; stride *= 2)
-				for (size_t i = 0; i + stride < N; i += 2 * stride)
+			{
+				for (size_t i = 1; i + stride <= N; i += 2 * stride)
 					nonzero[i] |= nonzero[i + stride];
-			const auto is_zero = !nonzero[0];
-			for (size_t i = 0; i < first_bit; ++i) quotient.bits[i] = is_zero;
+			}
+
+			const auto is_zero = !nonzero[1];
+			for (size_t i = 0; i < first_bit; ++i)
+				quotient->bits[i] = is_zero;
 		}
 
 		// Non-restoring remainders lie in [-D, D). A fixed divisor therefore
 		// needs only its significant bits plus a sign bit, at any tracker width.
-		const size_t width = constant_divisor ? divisor_width : N;
-		std::vector<bit_tracker> partial_remainder(width + 1), extended_divisor(width + 1);
-		for (size_t i = 0; i < width; ++i)
-			extended_divisor[i + 1] = divisor.bits[N - width + i];
+		const size_t width = divisor.width;
+		const size_t scratch_size = width + 1;
+		std::array<bit_tracker, N + 1> partial_storage;
+		std::array<bit_tracker, N + 1> operand_storage;
+		std::array<bit_tracker, N + 1> propagate_storage;
+		std::array<bit_tracker, N + 1> generate_storage;
+		std::array<bit_tracker, N + 1> sum_propagate_storage;
+
+		std::span<bit_tracker> partial_remainder(partial_storage.data(), scratch_size);
+		std::span<const bit_tracker> extended_divisor(divisor.extended.data(), scratch_size);
+		std::span<bit_tracker> operand(operand_storage.data(), scratch_size);
+		std::span<bit_tracker> propagate(propagate_storage.data(), scratch_size);
+		std::span<bit_tracker> generate(generate_storage.data(), scratch_size);
+		std::span<bit_tracker> sum_propagate(sum_propagate_storage.data(), scratch_size);
 
 		for (size_t dividend_bit = first_bit;
 			dividend_bit < N;
@@ -934,6 +1065,7 @@ struct int_tracker
 			const auto was_negative = partial_remainder[0];
 			for (size_t i = 0; i < width; ++i)
 				partial_remainder[i] = std::move(partial_remainder[i + 1]);
+
 			partial_remainder[width] = bits[dividend_bit];
 
 			// A non-negative partial remainder subtracts the divisor; a
@@ -941,11 +1073,35 @@ struct int_tracker
 			// initial carry supplies the +1 required for subtraction.
 			const auto invert_divisor = !was_negative;
 			auto carry = invert_divisor;
-			auto operand = extended_divisor;
-			for (auto& bit : operand) bit ^= invert_divisor;
-			details::add_bits_with_carry(partial_remainder, operand, carry);
-			quotient.bits[dividend_bit] = !partial_remainder[0];
+			if (divisor.is_constant())
+			{
+				// D xor !sign is either sign or !sign. Select it directly instead
+				// of redispatching constant folding for every divisor bit.
+				for (size_t i = 0; i < scratch_size; ++i)
+					operand[i] = extended_divisor[i].bit_state->state
+						? was_negative
+						: invert_divisor;
+			}
+			else
+			{
+				for (size_t i = 0; i < scratch_size; ++i)
+					operand[i] = extended_divisor[i] ^ invert_divisor;
+			}
+
+			details::add_bits_with_carry(
+				partial_remainder,
+				operand,
+				carry,
+				propagate,
+				generate,
+				sum_propagate);
+
+			if (quotient)
+				quotient->bits[dividend_bit] = !partial_remainder[0];
 		}
+
+		if (!remainder)
+			return;
 
 		self_type restored;
 		const auto is_negative = partial_remainder[0];
@@ -954,24 +1110,76 @@ struct int_tracker
 			if (is_negative.bit_state->state)
 			{
 				bit_tracker carry = false;
-				details::add_bits_with_carry(partial_remainder, extended_divisor, carry);
+				details::add_bits_with_carry(
+					partial_remainder, extended_divisor, carry,
+					propagate, generate, sum_propagate);
 			}
+
 			for (size_t i = 0; i < width; ++i)
 				restored.bits[N - width + i] = partial_remainder[i + 1];
 		}
 		else
 		{
-			auto corrected_remainder = partial_remainder;
+			for (size_t i = 0; i < scratch_size; ++i)
+				operand[i] = partial_remainder[i];
 			bit_tracker carry = false;
-			details::add_bits_with_carry(corrected_remainder, extended_divisor, carry);
+			details::add_bits_with_carry(
+				operand, extended_divisor, carry, propagate, generate, sum_propagate);
 			for (size_t i = 0; i < width; ++i)
 			{
 				const auto& uncorrected = partial_remainder[i + 1];
 				restored.bits[N - width + i] = uncorrected ^
-					(is_negative & (corrected_remainder[i + 1] ^ uncorrected));
+					(is_negative & (operand[i + 1] ^ uncorrected));
 			}
 		}
-		remainder = std::move(restored);
+
+		*remainder = std::move(restored);
+	}
+
+	constexpr self_type divide(const self_type& divisor) const
+	{
+		const details::divisor_profile<N> profile(divisor.bits);
+		self_type quotient;
+		divide_profile(profile, &quotient, nullptr);
+		return quotient;
+	}
+
+	constexpr self_type modulo(const self_type& divisor) const
+	{
+		const details::divisor_profile<N> profile(divisor.bits);
+		self_type remainder;
+		divide_profile(profile, nullptr, &remainder);
+		return remainder;
+	}
+
+	constexpr self_type divmod(const self_type& divisor, self_type& remainder) const
+	{
+		const details::divisor_profile<N> profile(divisor.bits);
+		self_type quotient;
+		divide_profile(profile, &quotient, &remainder);
+		return quotient;
+	}
+
+	constexpr self_type divide(const prepared_divisor<N>& divisor) const
+	{
+		self_type quotient;
+		divide_profile(divisor.profile_, &quotient, nullptr);
+		return quotient;
+	}
+
+	constexpr self_type modulo(const prepared_divisor<N>& divisor) const
+	{
+		self_type remainder;
+		divide_profile(divisor.profile_, nullptr, &remainder);
+		return remainder;
+	}
+
+	constexpr self_type divmod(
+		const prepared_divisor<N>& divisor,
+		self_type& remainder) const
+	{
+		self_type quotient;
+		divide_profile(divisor.profile_, &quotient, &remainder);
 		return quotient;
 	}
 
@@ -982,15 +1190,12 @@ struct int_tracker
 
 	friend constexpr self_type operator/(const self_type& lhs, const self_type& rhs)
 	{
-		self_type rem;
-		return self_type{lhs}.divmod(rhs, rem);
+		return lhs.divide(rhs);
 	}
 
 	friend constexpr self_type operator%(const self_type& lhs, const self_type& rhs)
 	{
-		self_type rem;
-		auto div = self_type{lhs}.divmod(rhs, rem);
-		return rem;
+		return lhs.modulo(rhs);
 	}
 
 	[[nodiscard]] std::string __to_string() const
@@ -1020,6 +1225,66 @@ struct int_tracker
 		return res;
 	}
 };
+
+template<size_t N>
+constexpr prepared_divisor<N>::prepared_divisor(const int_tracker<N>& divisor) :
+	profile_(divisor.bits)
+{
+	if (!profile_.is_constant())
+		throw std::invalid_argument("prepared divisor must be constant");
+}
+
+template<size_t N>
+constexpr int_tracker<N> prepared_divisor<N>::divide(
+	const int_tracker<N>& dividend) const
+{
+	return dividend.divide(*this);
+}
+
+template<size_t N>
+constexpr int_tracker<N> prepared_divisor<N>::modulo(
+	const int_tracker<N>& dividend) const
+{
+	return dividend.modulo(*this);
+}
+
+template<size_t N>
+constexpr int_tracker<N> prepared_divisor<N>::divmod(
+	const int_tracker<N>& dividend,
+	int_tracker<N>& remainder) const
+{
+	return dividend.divmod(*this, remainder);
+}
+
+template<size_t N>
+[[nodiscard]] constexpr prepared_divisor<N> prepare_divisor(
+	const int_tracker<N>& divisor)
+{
+	return prepared_divisor<N>(divisor);
+}
+
+template<size_t N>
+[[nodiscard]] constexpr prepared_divisor<N> prepare_divisor(
+	std::uintmax_t divisor)
+{
+	return prepare_divisor(int_tracker<N>(divisor));
+}
+
+template<size_t N>
+[[nodiscard]] constexpr int_tracker<N> operator/(
+	const int_tracker<N>& dividend,
+	const prepared_divisor<N>& divisor)
+{
+	return divisor.divide(dividend);
+}
+
+template<size_t N>
+[[nodiscard]] constexpr int_tracker<N> operator%(
+	const int_tracker<N>& dividend,
+	const prepared_divisor<N>& divisor)
+{
+	return divisor.modulo(dividend);
+}
 
 using itu8 = int_tracker<8>;
 using itu16 = int_tracker<16>;

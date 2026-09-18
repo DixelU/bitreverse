@@ -17,9 +17,13 @@ unsigned, modulo-`2^N` arithmetic and the existing inverse/solver interfaces.
   rows into two carry-save rows, and performs one final prefix addition. Carries
   above the result width are discarded. The operand with fewer potentially
   nonzero bits supplies the rows, making a sparse constant equally useful on
-  either side. This is a row-based carry-save tree, without a Dadda column scheduler.
+  either side. Compression reuses the row buffer in place, so it does not
+  allocate a new vector at every tree level. This is a row-based carry-save
+  tree, without a Dadda column scheduler.
 - Division retains non-restoring division and uses the prefix adder at each
-  iteration. Its outer remainder dependency is still sequential.
+  iteration. Its outer remainder dependency is still sequential. Its temporary
+  bit arrays have fixed capacity and live on the stack, so division itself no
+  longer allocates vector storage.
 - A known divisor of one or a power of two becomes bit wiring and zero constants.
   Other constant divisors use `bit_width(divisor) + 1` remainder bits, including
   the sign bit. Constants wider than a native integer are inspected bit by bit.
@@ -32,6 +36,24 @@ all-ones quotient and the original dividend as remainder. Skipped quotient bits
 retain a divisor-zero condition when the divisor is symbolic. In particular,
 `0 / x` cannot become an unconditional zero, nor can `x / x` become an
 unconditional one. These cases are included in the exhaustive tests.
+
+When one concrete divisor is reused, `prepare_divisor` scans and classifies it
+once and retains its significant-bit wiring:
+
+```cpp
+namespace br = dixelu::bitreverse;
+
+const auto by_ten = br::prepare_divisor<32>(10);
+const br::itu32 value = br::unknown;
+const auto quotient = value / by_ten;
+const auto remainder = value % by_ten;
+```
+
+The prepared object also provides `divide`, `modulo`, and `divmod` methods. It
+accepts only concrete divisors and throws `std::invalid_argument` for a symbolic
+one. Each result still needs its own Boolean graph, but repeated calls avoid
+rescanning the same right-hand side and bypass per-bit constant-XOR dispatch.
+Ordinary `int_tracker / int_tracker` and `%` remain supported.
 
 Inputs keep their original symbolic identities. The suggestion to replace
 `!unknown` with `unknown` is unsound when other expressions refer to the same

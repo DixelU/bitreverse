@@ -343,7 +343,7 @@ constexpr bool constexpr_symbolic_arithmetic()
 	doubled.self_add_ret_carry(x, carry);
 	const auto shifted = x * word{8};
 	const auto expected_shift = x << 3;
-	const auto remainder = x % word{10}; // Dynamic-width scratch is constexpr too.
+	const auto remainder = x % word{10}; // Fixed-capacity scratch is constexpr too.
 	for (size_t i = 0; i < 5; ++i)
 		if (shifted.bits[i].bit_state != expected_shift.bits[i].bit_state &&
 			(shifted.bits[i].bit_state->operation != '=' ||
@@ -357,6 +357,76 @@ constexpr bool constexpr_symbolic_arithmetic()
 }
 
 static_assert(constexpr_symbolic_arithmetic());
+
+constexpr bool constexpr_prepared_division()
+{
+	using word = br::int_tracker<5>;
+	const auto by_three = br::prepare_divisor<5>(3);
+	word remainder;
+	const auto quotient = by_three.divmod(word{13}, remainder);
+	const auto operator_quotient = word{13} / by_three;
+	const auto operator_remainder = word{13} % by_three;
+	const auto matches = [](const word& actual, unsigned expected)
+	{
+		for (size_t bit = 0; bit < 5; ++bit)
+			if (actual.bits[4 - bit].bit_state->operation != '=' ||
+				actual.bits[4 - bit].bit_state->state != ((expected >> bit) & 1))
+				return false;
+		return true;
+	};
+	return matches(quotient, 4) && matches(remainder, 1) &&
+		matches(operator_quotient, 4) && matches(operator_remainder, 1);
+}
+
+static_assert(constexpr_prepared_division());
+
+void prepared_constant_division()
+{
+	using word = br::int_tracker<8>;
+	const word x = br::unknown;
+	for (const unsigned constant : {0u, 1u, 8u, 10u, 255u})
+	{
+		const auto divisor = br::prepare_divisor(word{constant});
+		word combined_remainder;
+		const auto combined_quotient = divisor.divmod(x, combined_remainder);
+		const auto method_quotient = divisor.divide(x);
+		const auto method_remainder = divisor.modulo(x);
+		const auto operator_quotient = x / divisor;
+		const auto operator_remainder = x % divisor;
+
+		std::vector<br::bit_tracker> outputs;
+		for (const auto& output : {x, combined_quotient, combined_remainder,
+			method_quotient, method_remainder, operator_quotient, operator_remainder})
+			append(outputs, output);
+		evaluator eval(outputs);
+		for (unsigned input = 0; input < 256; ++input)
+		{
+			eval.reset();
+			eval.assign(x, native_value<8>(input));
+			eval.run();
+			const auto expected_quotient = native_value<8>(constant ? input / constant : 255);
+			const auto expected_remainder = native_value<8>(constant ? input % constant : input);
+			for (const auto& quotient : {combined_quotient, method_quotient, operator_quotient})
+				require(eval.word(quotient) == expected_quotient,
+					"prepared quotient failed");
+			for (const auto& remainder : {combined_remainder, method_remainder, operator_remainder})
+				require(eval.word(remainder) == expected_remainder,
+					"prepared remainder failed");
+		}
+	}
+
+	bool rejected = false;
+	try
+	{
+		const auto invalid = br::prepare_divisor(x);
+		(void)invalid;
+	}
+	catch (const std::invalid_argument&)
+	{
+		rejected = true;
+	}
+	require(rejected, "prepared divisor accepted a symbolic value");
+}
 
 void division_aliases()
 {
@@ -391,6 +461,11 @@ void circuit_shape()
 		br::measure_circuit(x % br::itu64{8}).gates == 0, "power-of-two division must be wiring only");
 	const auto modulo = br::measure_circuit(x % br::itu64{10});
 	require(modulo.gates <= 1600 && modulo.max_depth <= 560, "constant remainder was not narrowed");
+	const auto by_ten = br::prepare_divisor<64>(10);
+	const auto prepared_modulo = br::measure_circuit(x % by_ten);
+	require(prepared_modulo.gates == modulo.gates &&
+		prepared_modulo.max_depth == modulo.max_depth,
+		"prepared divisor changed the circuit shape");
 	const auto right = br::measure_circuit(x * br::itu64{13});
 	const auto left = br::measure_circuit(br::itu64{13} * x);
 	require(right.gates == left.gates && right.max_depth == left.max_depth,
@@ -407,6 +482,7 @@ int main()
 	wide_arithmetic<64>();
 	wide_arithmetic<65>();
 	wide_arithmetic<129>();
+	prepared_constant_division();
 	division_aliases();
 	circuit_shape();
 	std::cout << "All arithmetic tests passed\n";
