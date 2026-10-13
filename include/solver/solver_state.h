@@ -38,7 +38,7 @@ struct solver_state
 	search_budget* budget;
 	std::vector<int8_t> values;
 	std::vector<node_id> trail;
-	std::vector<node_id> propagation_queue;
+	size_t propagation_head{0};
 
 	explicit solver_state(
 		const compiled_circuit& compiled,
@@ -50,7 +50,9 @@ struct solver_state
 		values(compiled.nodes.size(), -1)
 	{
 		trail.reserve(compiled.nodes.size());
-		propagation_queue.reserve(compiled.nodes.size());
+		for (node_id id = 0; id < values.size(); ++id)
+			if (circuit.operations[id] == '=')
+				values[id] = static_cast<int8_t>(circuit.nodes[id]->state);
 	}
 
 	void tick_search(size_t amount = 1) const
@@ -63,9 +65,6 @@ struct solver_state
 		if (id == no_node)
 			return -1;
 
-		const auto& node = circuit.nodes[id];
-		if (node->operation == '=')
-			return static_cast<int8_t>(node->state);
 		return values[id];
 	}
 
@@ -77,7 +76,6 @@ struct solver_state
 
 		values[id] = static_cast<int8_t>(value);
 		trail.push_back(id);
-		propagation_queue.push_back(id);
 		if (statistics)
 			statistics->peak_trail =
 				std::max(statistics->peak_trail, trail.size());
@@ -86,7 +84,7 @@ struct solver_state
 
 	void begin_assignment()
 	{
-		propagation_queue.clear();
+		propagation_head = trail.size();
 	}
 
 	void undo_to(size_t mark)
@@ -96,6 +94,7 @@ struct solver_state
 			values[trail.back()] = -1;
 			trail.pop_back();
 		}
+		propagation_head = std::min(propagation_head, mark);
 	}
 };
 

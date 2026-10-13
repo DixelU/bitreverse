@@ -8,6 +8,39 @@ using node_t = const details::bitstate*;
 using node_id = size_t;
 inline constexpr node_id no_node = static_cast<node_id>(-1);
 
+// Compressed sparse rows: two allocations instead of one vector per node.
+// Keep argument-slot order (including duplicate children) for deterministic
+// propagation and consumers such as circuit_metrics' topological traversal.
+struct parent_adjacency
+{
+	std::vector<size_t> offsets;
+	std::vector<node_id> edges;
+
+	std::span<const node_id> operator[](node_id id) const
+	{
+		return std::span<const node_id>(edges).subspan(
+			offsets[id], offsets[id + 1] - offsets[id]);
+	}
+
+	void build(const std::vector<std::array<node_id, 2>>& inputs)
+	{
+		offsets.assign(inputs.size() + 1, 0);
+		for (const auto& children : inputs)
+			for (const node_id child : children)
+				if (child != no_node) ++offsets[child + 1];
+		for (size_t id = 1; id < offsets.size(); ++id)
+			offsets[id] += offsets[id - 1];
+		edges.resize(offsets.back());
+		// Fill backwards using the row ends as cursors, then restore offsets.
+		for (node_id id = inputs.size(); id-- != 0;)
+			for (const node_id child : inputs[id])
+				if (child != no_node) edges[--offsets[child + 1]] = id;
+		for (size_t id = 0; id < inputs.size(); ++id)
+			offsets[id] = offsets[id + 1];
+		offsets.back() = edges.size();
+	}
+};
+
 struct compiled_circuit
 {
 	counted_ptr<details::bitstate> root_ptr;
@@ -15,9 +48,10 @@ struct compiled_circuit
 	std::vector<counted_ptr<details::bitstate>> root_ptrs;
 	std::vector<node_id> root_ids;
 	std::vector<counted_ptr<details::bitstate>> nodes;
+	std::vector<std::uint8_t> operations;
 	std::unordered_map<node_t, node_id> node_ids;
 	std::vector<std::array<node_id, 2>> inputs;
-	std::vector<std::vector<node_id>> parents;
+	parent_adjacency parents;
 	std::vector<node_id> variables;
 
 	explicit compiled_circuit(counted_ptr<details::bitstate> root) :
@@ -50,8 +84,8 @@ struct compiled_circuit
 		const node_id id = nodes.size();
 		node_ids.emplace(raw, id);
 		nodes.push_back(node);
+		operations.push_back(node->operation);
 		inputs.push_back({no_node, no_node});
-		parents.emplace_back();
 		return id;
 	}
 
@@ -77,10 +111,9 @@ struct compiled_circuit
 			{
 				const node_id child = add_node(*children[index]);
 				inputs[id][index] = child;
-				if (child != no_node)
-					parents[child].push_back(id);
 			}
 		}
+		parents.build(inputs);
 
 		// High-fanout inputs participate in more constraints and tend to
 		// expose contradictions earlier.

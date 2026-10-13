@@ -97,12 +97,16 @@ struct engine
 				"disable affine reasoning or lower the affine atom cap");
 
 		database.clauses.reserve(circuit.nodes.size() * 4 + 1);
+		database.literal_storage.reserve(circuit.nodes.size() * 10);
 		database.unit_clauses.reserve(circuit.nodes.size());
 		trail.reserve(circuit.nodes.size());
 		trail_limits.reserve(circuit.variables.size());
 		decision_literals.reserve(circuit.variables.size());
 		decision_second_phases.reserve(circuit.variables.size());
 		seen_nodes.reserve(circuit.nodes.size());
+		for (node_id id = 0; id < values.size(); ++id)
+			if (circuit.operations[id] == '=')
+				values[id] = static_cast<int8_t>(circuit.nodes[id]->state);
 		build_cnf();
 
 		if (statistics)
@@ -122,9 +126,6 @@ struct engine
 
 	int8_t value_of(node_id variable) const
 	{
-		if (circuit.nodes[variable]->operation == '=')
-			return static_cast<int8_t>(
-				circuit.nodes[variable]->state);
 		return values[variable];
 	}
 
@@ -177,7 +178,7 @@ struct engine
 			return false;
 
 		for (const clause_id id : database.unit_clauses)
-			if (!enqueue(database.clauses[id].literals[0], id))
+			if (!enqueue(database.literals(id)[0], id))
 				return false;
 		return true;
 	}
@@ -215,14 +216,15 @@ struct engine
 					budget.tick();
 					const clause_id id = watching[index];
 					clause& current = database.clauses[id];
+					const auto literals = database.literals(id);
 
 					size_t false_watch = 0;
-					if (current.literals[current.watched[0]] !=
+					if (literals[current.watched[0]] !=
 						became_false)
 						false_watch = 1;
 					const size_t other_watch = 1 - false_watch;
 					const literal_t other =
-						current.literals[
+						literals[
 							current.watched[other_watch]];
 
 					if (literal_value(other) == 1)
@@ -232,9 +234,9 @@ struct engine
 					}
 
 					size_t replacement =
-						current.literals.size();
+						literals.size();
 					for (size_t candidate = 0;
-						candidate < current.literals.size();
+						candidate < literals.size();
 						++candidate)
 					{
 						budget.tick();
@@ -242,19 +244,19 @@ struct engine
 							candidate == current.watched[1])
 							continue;
 						if (literal_value(
-							current.literals[candidate]) != 0)
+							literals[candidate]) != 0)
 						{
 							replacement = candidate;
 							break;
 						}
 					}
 
-					if (replacement != current.literals.size())
+					if (replacement != literals.size())
 					{
 						current.watched[false_watch] =
-							replacement;
+							static_cast<std::uint32_t>(replacement);
 						database.watches[
-							current.literals[replacement]]
+							literals[replacement]]
 								.push_back(id);
 						watching[index] = watching.back();
 						watching.pop_back();
@@ -321,8 +323,7 @@ struct engine
 				return std::nullopt;
 			}
 
-			const clause& reason_clause = database.clauses[source];
-			for (const literal_t literal : reason_clause.literals)
+			for (const literal_t literal : database.literals(source))
 			{
 				budget.tick();
 				const node_id variable =
@@ -471,7 +472,7 @@ struct engine
 			if (output == -1)
 				continue;
 
-			switch (circuit.nodes[parent]->operation)
+			switch (circuit.operations[parent])
 			{
 				case '&':
 					(output == 1 ? true_votes : false_votes) += 2;
@@ -638,7 +639,7 @@ struct engine
 				false);
 		}
 
-		return solutions;
+		return std::move(solutions);
 	}
 };
 

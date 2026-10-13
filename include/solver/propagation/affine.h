@@ -6,12 +6,6 @@
 
 struct affine_propagator
 {
-	struct row
-	{
-		std::vector<std::uint64_t> coefficients;
-		bool rhs{false};
-	};
-
 	const compiled_circuit& circuit;
 	bool active{false};
 	size_t atom_count{0};
@@ -21,6 +15,11 @@ struct affine_propagator
 	std::vector<std::uint64_t> coefficients;
 	std::vector<std::uint8_t> constants;
 	std::vector<std::uint8_t> ready;
+	// Reused elimination workspace, bounded by the number of atoms rather
+	// than the number of assigned gates. Rows use a single contiguous buffer.
+	std::vector<std::uint64_t> basis, known_mask, known_values;
+	std::vector<node_id> pivot_rows, pivot_columns;
+	std::vector<std::uint8_t> right_sides;
 
 	affine_propagator(
 		const compiled_circuit& compiled,
@@ -50,7 +49,7 @@ struct affine_propagator
 
 		ready[id] = 2;
 		std::uint64_t* destination = words(id);
-		const std::uint8_t operation = circuit.nodes[id]->operation;
+		const std::uint8_t operation = circuit.operations[id];
 
 		if (node_atom_columns[id] != no_node)
 		{
@@ -89,29 +88,35 @@ struct affine_propagator
 	void initialize(size_t max_atoms)
 	{
 		size_t affine_gate_count = 0;
-		node_atom_columns.assign(circuit.nodes.size(), no_node);
-
 		for (node_id id = 0; id < circuit.nodes.size(); ++id)
 		{
 			const std::uint8_t operation =
-				circuit.nodes[id]->operation;
+				circuit.operations[id];
 			if (operation == '^' || operation == '!')
 				++affine_gate_count;
 
 			if (operation == '*' ||
 				operation == '&' ||
 				operation == '|')
+				++atom_count;
+		}
+
+		if (affine_gate_count == 0 ||
+			atom_count == 0 ||
+			atom_count > max_atoms)
+			return;
+
+		node_atom_columns.assign(circuit.nodes.size(), no_node);
+		atom_nodes.reserve(atom_count);
+		for (node_id id = 0; id < circuit.nodes.size(); ++id)
+		{
+			const auto operation = circuit.operations[id];
+			if (operation == '*' || operation == '&' || operation == '|')
 			{
 				node_atom_columns[id] = atom_nodes.size();
 				atom_nodes.push_back(id);
 			}
 		}
-
-		atom_count = atom_nodes.size();
-		if (affine_gate_count == 0 ||
-			atom_count == 0 ||
-			atom_count > max_atoms)
-			return;
 
 		word_count = (atom_count + 63) / 64;
 		coefficients.assign(
@@ -126,105 +131,104 @@ struct affine_propagator
 		active = true;
 	}
 
-	bool propagate(solver_state& state) const
+	bool propagate(solver_state& state)
 	{
 		if (!active)
 			return true;
 		if (state.statistics)
 			++state.statistics->affine_passes;
 
-		std::vector<row> rows;
-		rows.reserve(state.trail.size());
+		known_mask.assign(word_count, 0);
+		known_values.assign(word_count, 0);
+		for (size_t column = 0; column < atom_count; ++column)
+		{
+			state.tick_search();
+			const auto value = state.value_of(atom_nodes[column]);
+			if (value == -1) continue;
+			const auto bit = std::uint64_t{1} << (column % 64);
+			known_mask[column / 64] |= bit;
+			if (value) known_values[column / 64] |= bit;
+		}
 
+		pivot_rows.assign(atom_count, no_node);
+		pivot_columns.clear();
+		const auto row_limit = std::min(atom_count, state.trail.size());
+		basis.resize((row_limit + 1) * word_count);
+		right_sides.resize(row_limit);
+		size_t rank = 0;
 		for (const node_id id : state.trail)
 		{
+			state.tick_search();
+			if (node_atom_columns[id] != no_node) continue;
+			auto* equation = basis.data() + rank * word_count;
+			bool rhs = static_cast<bool>(state.values[id]) != static_cast<bool>(constants[id]);
+			const auto* form = words(id);
 			state.tick_search(word_count);
-			row equation;
-			equation.coefficients.assign(
-				words(id),
-				words(id) + word_count);
-			equation.rhs =
-				static_cast<bool>(state.values[id]) ^
-				static_cast<bool>(constants[id]);
-			rows.push_back(std::move(equation));
-		}
-
-		size_t rank = 0;
-		for (size_t column = 0;
-			column < atom_count && rank < rows.size();
-			++column)
-		{
-			state.tick_search();
-			const size_t word = column / 64;
-			const std::uint64_t bit =
-				std::uint64_t{1} << (column % 64);
-
-			size_t pivot = rank;
-			while (pivot < rows.size() &&
-				!(rows[pivot].coefficients[word] & bit))
-			{
-				state.tick_search();
-				++pivot;
-			}
-			if (pivot == rows.size())
-				continue;
-
-			std::swap(rows[rank], rows[pivot]);
-			for (size_t row_index = 0;
-				row_index < rows.size();
-				++row_index)
-			{
-				state.tick_search();
-				if (row_index == rank ||
-					!(rows[row_index].coefficients[word] & bit))
-					continue;
-
-				for (size_t current_word = 0;
-					current_word < word_count;
-					++current_word)
-				{
-					state.tick_search();
-					rows[row_index].coefficients[current_word] ^=
-						rows[rank].coefficients[current_word];
-				}
-				rows[row_index].rhs =
-					rows[row_index].rhs != rows[rank].rhs;
-			}
-			++rank;
-		}
-
-		for (const auto& equation : rows)
-		{
-			state.tick_search();
-			size_t set_bits = 0;
-			size_t only_column = 0;
 			for (size_t word = 0; word < word_count; ++word)
 			{
+				rhs ^= (std::popcount(form[word] & known_values[word]) & 1) != 0;
+				equation[word] = form[word] & ~known_mask[word];
+			}
+
+			// Insert into a row-echelon basis. Redundant equations consume only
+			// this scratch row, even when thousands of gates are assigned.
+			bool inserted = false;
+			for (size_t word = 0; word < word_count && !inserted; ++word)
+			{
 				state.tick_search();
-				const size_t word_bits =
-					std::popcount(equation.coefficients[word]);
-				if (word_bits != 0)
+				while (equation[word])
 				{
-					set_bits += word_bits;
-					if (set_bits == 1)
-						only_column =
-							word * 64 +
-							std::countr_zero(
-								equation.coefficients[word]);
+					state.tick_search();
+					const auto column = word * 64 + std::countr_zero(equation[word]);
+					const auto pivot = pivot_rows[column];
+					if (pivot == no_node)
+					{
+						pivot_rows[column] = rank;
+						pivot_columns.push_back(column);
+						right_sides[rank++] = rhs;
+						inserted = true;
+						break;
+					}
+					const auto* source = basis.data() + pivot * word_count;
+					state.tick_search(word_count - word);
+					for (size_t j = word; j < word_count; ++j) equation[j] ^= source[j];
+					rhs ^= right_sides[pivot] != 0;
 				}
 			}
+			if (!inserted && rhs) return false;
+		}
 
-			if (set_bits == 0)
+		// Reduce pivots from highest column down. Insertion order need not be
+		// column order. RREF singleton rows expose exactly the forced atoms.
+		for (size_t column = atom_count; column-- != 0;)
+		{
+			state.tick_search();
+			const auto pivot = pivot_rows[column];
+			if (pivot == no_node) continue;
+			const auto word = column / 64;
+			const auto bit = std::uint64_t{1} << (column % 64);
+			const auto* source = basis.data() + pivot * word_count;
+			for (size_t row = 0; row < rank; ++row)
 			{
-				if (equation.rhs)
-					return false;
-				continue;
+				state.tick_search();
+				if (pivot_columns[row] >= column) continue;
+				auto* destination = basis.data() + row * word_count;
+				if (!(destination[word] & bit)) continue;
+				state.tick_search(word_count - word);
+				for (size_t j = word; j < word_count; ++j) destination[j] ^= source[j];
+				right_sides[row] ^= right_sides[pivot];
 			}
-
-			if (set_bits == 1 &&
-				!state.set_value(
-					atom_nodes[only_column],
-					equation.rhs))
+		}
+		for (size_t row = 0; row < rank; ++row)
+		{
+			size_t set_bits = 0;
+			for (size_t word = pivot_columns[row] / 64; word < word_count; ++word)
+			{
+				state.tick_search();
+				set_bits += std::popcount(basis[row * word_count + word]);
+				if (set_bits > 1) break;
+			}
+			if (set_bits == 1 && !state.set_value(atom_nodes[pivot_columns[row]], right_sides[row] != 0))
 				return false;
 		}
 

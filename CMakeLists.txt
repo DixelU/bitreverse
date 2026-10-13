@@ -82,7 +82,7 @@ if(BUILD_TESTING)
         set_tests_properties(${partial_assert_target} PROPERTIES TIMEOUT 60)
     endforeach()
 
-    foreach(test_target solver_budget_tests cegis_tests multiplication_reversal_tests sha_tests circuit_metrics_tests arithmetic_tests)
+    foreach(test_target solver_budget_tests solver_search_tests cegis_tests multiplication_reversal_tests sha_tests circuit_metrics_tests arithmetic_tests)
         add_executable(${test_target} tests/${test_target}.cpp)
         target_link_libraries(${test_target} PRIVATE bitreverse::headers)
         target_compile_options(${test_target} PRIVATE -Wall -Wextra -pedantic -O3)
@@ -183,6 +183,7 @@ if(BUILD_TESTING)
             partial_assert_crc32
             partial_assert_md5
             solver_budget_tests
+            solver_search_tests
             cegis_tests
             multiplication_reversal_tests
             sha_tests

@@ -83,10 +83,9 @@ struct engine
 	bool propagate()
 	{
 		budget.tick();
-		size_t cursor = 0;
 		while (true)
 		{
-			if (!gates.propagate_pending(state, cursor))
+			if (!gates.propagate_pending(state, state.propagation_head))
 				return false;
 
 			const size_t previous_trail_size = state.trail.size();
@@ -144,7 +143,7 @@ struct engine
 			if (output == -1)
 				continue;
 
-			switch (circuit.nodes[parent]->operation)
+			switch (circuit.operations[parent])
 			{
 				case '&':
 					(output == 1 ? true_votes : false_votes) += 2;
@@ -162,41 +161,60 @@ struct engine
 
 	void search()
 	{
-		if (stop_requested || (first_only && solution_count != 0))
-			return;
-		budget.tick();
-
-		node_id selected = no_node;
-		for (const node_id variable : circuit.variables)
+		struct decision
+		{
+			size_t mark, variable_index;
+			bool first_phase, second_phase;
+		};
+		std::vector<decision> stack;
+		size_t next_variable = 0;
+		while (!stop_requested && !(first_only && solution_count != 0))
 		{
 			budget.tick();
-			if (state.value_of(variable) == -1)
+			// Earlier variables are assigned by ancestors. Resume the ordered
+			// scan here instead of re-scanning that prefix at every decision.
+			while (next_variable < circuit.variables.size())
 			{
-				selected = variable;
-				break;
+				budget.tick();
+				if (state.value_of(circuit.variables[next_variable]) == -1) break;
+				++next_variable;
 			}
+			if (next_variable == circuit.variables.size())
+			{
+				record();
+				if (stop_requested || first_only) break;
+			}
+			else
+			{
+				const auto selected = circuit.variables[next_variable];
+				const bool phase = preferred_phase(selected);
+				stack.push_back({state.trail.size(), next_variable++, phase, false});
+				if (statistics) ++statistics->decisions;
+				if (assign(selected, phase)) continue;
+			}
+
+			bool resumed = false;
+			while (!stack.empty())
+			{
+				auto& branch = stack.back();
+				state.undo_to(branch.mark);
+				if (!branch.second_phase)
+				{
+					branch.second_phase = true;
+					next_variable = branch.variable_index + 1;
+					if (statistics) ++statistics->decisions;
+					if (assign(circuit.variables[branch.variable_index], !branch.first_phase))
+					{
+						resumed = true;
+						break;
+					}
+					state.undo_to(branch.mark);
+				}
+				stack.pop_back();
+			}
+			if (!resumed) break;
 		}
-
-		if (selected == no_node)
-		{
-			record();
-			return;
-		}
-
-		const bool first_phase = preferred_phase(selected);
-		for (const bool phase : {first_phase, !first_phase})
-		{
-			if (statistics)
-				++statistics->decisions;
-
-			const size_t mark = state.trail.size();
-			if (assign(selected, phase))
-				search();
-			state.undo_to(mark);
-
-			if (stop_requested || (first_only && solution_count != 0))
-				return;
-		}
+		if (!stack.empty()) state.undo_to(stack.front().mark);
 	}
 
 	solutions_t run()
@@ -222,7 +240,7 @@ struct engine
 		else if (statistics)
 			++statistics->conflicts;
 
-		return solutions;
+		return std::move(solutions);
 	}
 };
 

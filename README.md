@@ -207,7 +207,8 @@ solver at query time.
 
 Start with the [solver architecture](docs/SOLVER.md) or the
 [partial-assertion API and experiments](docs/PARTIAL_ASSERT.md). Experiment reports
-cover [BDD synthesis](docs/SYNTHESIS_RESULTS.md),
+cover [solver runtime and memory optimizations](docs/SEARCH_OPTIMIZATION.md),
+[BDD synthesis](docs/SYNTHESIS_RESULTS.md),
 [compiled selectors](docs/SELECTOR_RESULTS.md),
 [counterexample-guided synthesis](docs/CEGIS_RESULTS.md), and
 [256-bit multiplication](docs/MULTIPLICATION_256_RESULTS.md), plus the

@@ -30,7 +30,7 @@ struct reasoned_gate_propagator
 		std::initializer_list<literal_t> literals)
 	{
 		const clause_id id = database.add_clause(
-			std::vector<literal_t>(literals),
+			literals,
 			false,
 			false);
 		reason_clauses[gate][index] = id;
@@ -43,7 +43,7 @@ struct reasoned_gate_propagator
 		{
 			const literal_t output = make_literal(id);
 			const std::uint8_t operation =
-				circuit.nodes[id]->operation;
+				circuit.operations[id];
 
 			if (operation == '=' || operation == '*')
 				continue;
@@ -143,7 +143,7 @@ struct reasoned_gate_propagator
 		Enqueue& enqueue) const
 	{
 		const std::uint8_t operation =
-			circuit.nodes[gate]->operation;
+			circuit.operations[gate];
 		if (operation == '=' || operation == '*')
 			return no_clause;
 

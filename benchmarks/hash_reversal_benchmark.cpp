@@ -1,3 +1,6 @@
+#ifdef BITREVERSE_TRACK_ALLOCATIONS
+#include "search_allocations.h"
+#endif
 #include "circuit_metrics.h"
 #include "crc32.h"
 #include "md5.h"
@@ -116,6 +119,11 @@ void run(const std::string& algorithm, const std::vector<std::uint8_t>& bytes,
 	br::solver_statistics stats;
 	br::collision_resolution::solutions_t solutions;
 	std::string status;
+#ifdef BITREVERSE_TRACK_ALLOCATIONS
+	const auto initial_bytes = search_allocations::live;
+	const auto initial_calls = search_allocations::calls;
+	search_allocations::peak = initial_bytes;
+#endif
 	const auto solve_begin = clock_type::now();
 	try
 	{
@@ -129,6 +137,10 @@ void run(const std::string& algorithm, const std::vector<std::uint8_t>& bytes,
 		status = "unsat";
 	}
 	const double solve_ms = milliseconds(clock_type::now() - solve_begin);
+#ifdef BITREVERSE_TRACK_ALLOCATIONS
+	const auto solve_peak_bytes = search_allocations::peak - initial_bytes;
+	const auto solve_allocation_calls = search_allocations::calls - initial_calls;
+#endif
 	std::string recovered_hex;
 	if (!solutions.empty())
 	{
@@ -150,7 +162,12 @@ void run(const std::string& algorithm, const std::vector<std::uint8_t>& bytes,
 		<< ",\"decisions\":" << stats.decisions << ",\"conflicts\":" << stats.conflicts
 		<< ",\"propagations\":" << stats.propagations << ",\"search_steps\":" << stats.search_steps
 		<< ",\"solutions\":" << stats.solutions << ",\"affine_active\":" << (stats.affine_enabled ? "true" : "false")
-		<< ",\"recovered_hex\":\"" << recovered_hex << "\"}" << std::endl;
+		<< ",\"recovered_hex\":\"" << recovered_hex << '"'
+#ifdef BITREVERSE_TRACK_ALLOCATIONS
+		<< ",\"solve_peak_requested_bytes\":" << solve_peak_bytes
+		<< ",\"solve_allocation_calls\":" << solve_allocation_calls
+#endif
+		<< "}" << std::endl;
 }
 }
 

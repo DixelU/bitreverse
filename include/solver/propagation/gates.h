@@ -14,7 +14,7 @@ struct gate_propagator
 	bool imply(solver_state& state, node_id gate) const
 	{
 		state.tick_search();
-		const std::uint8_t operation = circuit.nodes[gate]->operation;
+		const std::uint8_t operation = circuit.operations[gate];
 		if (operation == '=' || operation == '*')
 			return true;
 
@@ -109,9 +109,9 @@ struct gate_propagator
 		solver_state& state,
 		size_t& cursor) const
 	{
-		while (cursor < state.propagation_queue.size())
+		while (cursor < state.trail.size())
 		{
-			const node_id id = state.propagation_queue[cursor++];
+			const node_id id = state.trail[cursor++];
 			if (state.statistics)
 				++state.statistics->propagations;
 
