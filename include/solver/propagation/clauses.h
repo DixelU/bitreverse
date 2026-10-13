@@ -9,29 +9,29 @@ using clause_id = std::uint32_t;
 inline constexpr clause_id no_clause =
 	std::numeric_limits<clause_id>::max();
 
-constexpr literal_t make_literal(node_id variable, bool negated = false)
+constexpr literal_t make_literal(const node_id variable, const bool negated = false)
 {
 	return
 		(static_cast<literal_t>(variable) << 1) |
 		static_cast<literal_t>(negated);
 }
 
-constexpr node_id literal_variable(literal_t literal)
+constexpr node_id literal_variable(const literal_t literal)
 {
-	return static_cast<node_id>(literal >> 1);
+	return literal >> 1;
 }
 
-constexpr bool literal_is_negated(literal_t literal)
+constexpr bool literal_is_negated(const literal_t literal)
 {
 	return (literal & 1U) != 0;
 }
 
-constexpr literal_t negate_literal(literal_t literal)
+constexpr literal_t negate_literal(const literal_t literal)
 {
 	return literal ^ 1U;
 }
 
-constexpr literal_t literal_for_value(node_id variable, bool value)
+constexpr literal_t literal_for_value(const node_id variable, const bool value)
 {
 	return make_literal(variable, !value);
 }
@@ -47,11 +47,13 @@ struct clause
 struct clause_database
 {
 	std::vector<clause> clauses;
+
 	// Reason, learned and blocking literals share one growable arena. Clause
 	// IDs/offsets remain valid when either vector reallocates; spans do not.
 	std::vector<literal_t> literal_storage;
 	std::vector<std::vector<clause_id>> watches;
 	std::vector<clause_id> unit_clauses;
+
 	size_t watched_clause_count{0};
 	bool contains_empty_clause{false};
 
@@ -61,13 +63,13 @@ struct clause_database
 	std::span<const literal_t> literals(clause_id id) const
 	{
 		const auto& stored = clauses[id];
-		return std::span<const literal_t>(literal_storage).subspan(stored.offset, stored.size);
+		return std::span(literal_storage).subspan(stored.offset, stored.size);
 	}
 
 	clause_id add_clause(
 		std::span<const literal_t> literals,
-		bool learned = false,
-		bool watch_literals = true)
+		const bool learned = false,
+		const bool watch_literals = true)
 	{
 		if (literals.empty())
 		{
@@ -78,8 +80,8 @@ struct clause_database
 		if (clauses.size() >= no_clause ||
 			literals.size() > std::numeric_limits<std::uint32_t>::max())
 			throw std::length_error("CDCL clause database capacity exceeded");
-		const clause_id id =
-			static_cast<clause_id>(clauses.size());
+
+		const auto id = static_cast<clause_id>(clauses.size());
 		clause stored{
 			.offset = literal_storage.size(),
 			.size = static_cast<std::uint32_t>(literals.size()),
@@ -88,7 +90,9 @@ struct clause_database
 
 		literal_storage.insert(literal_storage.end(), literals.begin(), literals.end());
 		if (literals.size() == 1)
+		{
 			unit_clauses.push_back(id);
+		}
 		else if (watch_literals)
 		{
 			stored.watched[1] = 1;
@@ -101,10 +105,10 @@ struct clause_database
 		return id;
 	}
 
-	clause_id add_clause(std::initializer_list<literal_t> literals,
-		bool learned = false, bool watch_literals = true)
+	clause_id add_clause(const std::initializer_list<literal_t> literals,
+		const bool learned = false, const bool watch_literals = true)
 	{
-		return add_clause(std::span<const literal_t>(literals.begin(), literals.size()),
+		return add_clause(std::span(literals.begin(), literals.size()),
 			learned, watch_literals);
 	}
 };

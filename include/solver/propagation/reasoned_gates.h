@@ -25,14 +25,11 @@ struct reasoned_gate_propagator
 			{no_clause, no_clause, no_clause, no_clause}) {}
 
 	clause_id add_reason(
-		node_id gate,
-		size_t index,
-		std::initializer_list<literal_t> literals)
+		const node_id gate,
+		const size_t index,
+		const std::initializer_list<literal_t> literals)
 	{
-		const clause_id id = database.add_clause(
-			literals,
-			false,
-			false);
+		const clause_id id = database.add_clause(literals, false, false);
 		reason_clauses[gate][index] = id;
 		return id;
 	}
@@ -53,10 +50,7 @@ struct reasoned_gate_propagator
 			if (operation == '!')
 			{
 				add_reason(id, 0, {output, lhs});
-				add_reason(
-					id,
-					1,
-					{negate_literal(output), negate_literal(lhs)});
+				add_reason(id, 1, {negate_literal(output), negate_literal(lhs)});
 				continue;
 			}
 
@@ -65,54 +59,22 @@ struct reasoned_gate_propagator
 			switch (operation)
 			{
 				case '&':
-					add_reason(
-						id,
-						0,
-						{negate_literal(output), lhs});
-					add_reason(
-						id,
-						1,
-						{negate_literal(output), rhs});
-					add_reason(
-						id,
-						2,
-						{output, negate_literal(lhs),
-							negate_literal(rhs)});
+					add_reason(id, 0, {negate_literal(output), lhs});
+					add_reason(id, 1, {negate_literal(output), rhs});
+					add_reason(id, 2, {output, negate_literal(lhs), negate_literal(rhs)});
 					break;
 
 				case '|':
-					add_reason(
-						id,
-						0,
-						{output, negate_literal(lhs)});
-					add_reason(
-						id,
-						1,
-						{output, negate_literal(rhs)});
-					add_reason(
-						id,
-						2,
-						{negate_literal(output), lhs, rhs});
+					add_reason(id, 0, {output, negate_literal(lhs)});
+					add_reason(id, 1, {output, negate_literal(rhs)});
+					add_reason(id, 2, {negate_literal(output), lhs, rhs});
 					break;
 
 				case '^':
-					add_reason(
-						id,
-						0,
-						{negate_literal(lhs), negate_literal(rhs),
-							negate_literal(output)});
-					add_reason(
-						id,
-						1,
-						{lhs, rhs, negate_literal(output)});
-					add_reason(
-						id,
-						2,
-						{negate_literal(lhs), rhs, output});
-					add_reason(
-						id,
-						3,
-						{lhs, negate_literal(rhs), output});
+					add_reason(id, 0, {negate_literal(lhs), negate_literal(rhs), negate_literal(output)});
+					add_reason(id, 1, {lhs, rhs, negate_literal(output)});
+					add_reason(id, 2, {negate_literal(lhs), rhs, output});
+					add_reason(id, 3, {lhs, negate_literal(rhs), output});
 					break;
 
 				default:
@@ -123,17 +85,13 @@ struct reasoned_gate_propagator
 	}
 
 	template<typename Enqueue>
-	clause_id assign(
-		node_id variable,
-		bool value,
+	static clause_id assign(
+		const node_id variable,
+		const bool value,
 		clause_id reason,
-		Enqueue& enqueue) const
+		Enqueue& enqueue)
 	{
-		return enqueue(
-			literal_for_value(variable, value),
-			reason)
-			? no_clause
-			: reason;
+		return enqueue(literal_for_value(variable, value), reason) ? no_clause : reason;
 	}
 
 	template<typename ValueOf, typename Enqueue>
@@ -178,6 +136,7 @@ struct reasoned_gate_propagator
 			{
 				static constexpr size_t output_reason[2][2] =
 					{{1, 3}, {2, 0}};
+
 				return assign(
 					gate,
 					lhs != rhs,
@@ -188,6 +147,7 @@ struct reasoned_gate_propagator
 			{
 				static constexpr size_t rhs_reason[2][2] =
 					{{3, 2}, {1, 0}};
+
 				return assign(
 					rhs_id,
 					output != lhs,
@@ -198,6 +158,7 @@ struct reasoned_gate_propagator
 			{
 				static constexpr size_t lhs_reason[2][2] =
 					{{2, 3}, {1, 0}};
+
 				return assign(
 					lhs_id,
 					output != rhs,
@@ -229,30 +190,22 @@ struct reasoned_gate_propagator
 			output = value_of(gate);
 			lhs = value_of(lhs_id);
 			rhs = value_of(rhs_id);
+
 			if (output == 1)
 			{
 				clause_id conflict =
 					assign(lhs_id, true, reasons[0], enqueue);
 				if (conflict != no_clause)
 					return conflict;
-				return assign(
-					rhs_id,
-					true,
-					reasons[1],
-					enqueue);
+
+				return assign(rhs_id, true, reasons[1], enqueue);
 			}
+
 			if (output == 0 && lhs == 1)
-				return assign(
-					rhs_id,
-					false,
-					reasons[2],
-					enqueue);
+				return assign(rhs_id, false, reasons[2], enqueue);
 			if (output == 0 && rhs == 1)
-				return assign(
-					lhs_id,
-					false,
-					reasons[2],
-					enqueue);
+				return assign(lhs_id, false, reasons[2], enqueue);
+
 			return no_clause;
 		}
 
@@ -264,6 +217,7 @@ struct reasoned_gate_propagator
 					lhs == 1 ? reasons[0] : reasons[1];
 				const clause_id conflict =
 					assign(gate, true, reason, enqueue);
+
 				if (conflict != no_clause)
 					return conflict;
 			}
@@ -271,6 +225,7 @@ struct reasoned_gate_propagator
 			{
 				const clause_id conflict =
 					assign(gate, false, reasons[2], enqueue);
+
 				if (conflict != no_clause)
 					return conflict;
 			}
@@ -278,30 +233,22 @@ struct reasoned_gate_propagator
 			output = value_of(gate);
 			lhs = value_of(lhs_id);
 			rhs = value_of(rhs_id);
+
 			if (output == 0)
 			{
-				clause_id conflict =
+				const clause_id conflict =
 					assign(lhs_id, false, reasons[0], enqueue);
 				if (conflict != no_clause)
 					return conflict;
-				return assign(
-					rhs_id,
-					false,
-					reasons[1],
-					enqueue);
+
+				return assign(rhs_id, false, reasons[1], enqueue);
 			}
+			
 			if (output == 1 && lhs == 0)
-				return assign(
-					rhs_id,
-					true,
-					reasons[2],
-					enqueue);
+				return assign(rhs_id, true, reasons[2], enqueue);
 			if (output == 1 && rhs == 0)
-				return assign(
-					lhs_id,
-					true,
-					reasons[2],
-					enqueue);
+				return assign(lhs_id, true, reasons[2], enqueue);
+
 			return no_clause;
 		}
 

@@ -7,14 +7,17 @@
 struct affine_propagator
 {
 	const compiled_circuit& circuit;
+
 	bool active{false};
 	size_t atom_count{0};
 	size_t word_count{0};
+
 	std::vector<node_id> atom_nodes;
 	std::vector<node_id> node_atom_columns;
 	std::vector<std::uint64_t> coefficients;
 	std::vector<std::uint8_t> constants;
 	std::vector<std::uint8_t> ready;
+
 	// Reused elimination workspace, bounded by the number of atoms rather
 	// than the number of assigned gates. Rows use a single contiguous buffer.
 	std::vector<std::uint64_t> basis, known_mask, known_values;
@@ -44,6 +47,7 @@ struct affine_propagator
 	{
 		if (ready[id] == 1)
 			return;
+
 		if (ready[id] == 2)
 			throw std::logic_error("Cyclic bit expression");
 
@@ -58,7 +62,9 @@ struct affine_propagator
 				std::uint64_t{1} << (column % 64);
 		}
 		else if (operation == '=')
+		{
 			constants[id] = circuit.nodes[id]->state;
+		}
 		else if (operation == '!')
 		{
 			const node_id lhs = circuit.inputs[id][0];
@@ -101,9 +107,7 @@ struct affine_propagator
 				++atom_count;
 		}
 
-		if (affine_gate_count == 0 ||
-			atom_count == 0 ||
-			atom_count > max_atoms)
+		if (affine_gate_count == 0 || atom_count == 0 || atom_count > max_atoms)
 			return;
 
 		node_atom_columns.assign(circuit.nodes.size(), no_node);
@@ -144,26 +148,34 @@ struct affine_propagator
 		{
 			state.tick_search();
 			const auto value = state.value_of(atom_nodes[column]);
-			if (value == -1) continue;
+			if (value == -1)
+				continue;
+
 			const auto bit = std::uint64_t{1} << (column % 64);
 			known_mask[column / 64] |= bit;
-			if (value) known_values[column / 64] |= bit;
+
+			if (value)
+				known_values[column / 64] |= bit;
 		}
 
-		pivot_rows.assign(atom_count, no_node);
 		pivot_columns.clear();
+		pivot_rows.assign(atom_count, no_node);
 		const auto row_limit = std::min(atom_count, state.trail.size());
 		basis.resize((row_limit + 1) * word_count);
 		right_sides.resize(row_limit);
 		size_t rank = 0;
+
 		for (const node_id id : state.trail)
 		{
 			state.tick_search();
-			if (node_atom_columns[id] != no_node) continue;
+			if (node_atom_columns[id] != no_node)
+				continue;
+
 			auto* equation = basis.data() + rank * word_count;
 			bool rhs = static_cast<bool>(state.values[id]) != static_cast<bool>(constants[id]);
 			const auto* form = words(id);
 			state.tick_search(word_count);
+
 			for (size_t word = 0; word < word_count; ++word)
 			{
 				rhs ^= (std::popcount(form[word] & known_values[word]) & 1) != 0;
@@ -189,13 +201,19 @@ struct affine_propagator
 						inserted = true;
 						break;
 					}
+
 					const auto* source = basis.data() + pivot * word_count;
 					state.tick_search(word_count - word);
-					for (size_t j = word; j < word_count; ++j) equation[j] ^= source[j];
+
+					for (size_t j = word; j < word_count; ++j)
+						equation[j] ^= source[j];
+
 					rhs ^= right_sides[pivot] != 0;
 				}
 			}
-			if (!inserted && rhs) return false;
+
+			if (!inserted && rhs)
+				return false;
 		}
 
 		// Reduce pivots from highest column down. Insertion order need not be
@@ -204,18 +222,28 @@ struct affine_propagator
 		{
 			state.tick_search();
 			const auto pivot = pivot_rows[column];
-			if (pivot == no_node) continue;
+
+			if (pivot == no_node)
+				continue;
+
 			const auto word = column / 64;
 			const auto bit = std::uint64_t{1} << (column % 64);
 			const auto* source = basis.data() + pivot * word_count;
+
 			for (size_t row = 0; row < rank; ++row)
 			{
 				state.tick_search();
-				if (pivot_columns[row] >= column) continue;
+				if (pivot_columns[row] >= column)
+					continue;
+
 				auto* destination = basis.data() + row * word_count;
-				if (!(destination[word] & bit)) continue;
+				if (!(destination[word] & bit))
+					continue;
+
 				state.tick_search(word_count - word);
-				for (size_t j = word; j < word_count; ++j) destination[j] ^= source[j];
+				for (size_t j = word; j < word_count; ++j)
+					destination[j] ^= source[j];
+
 				right_sides[row] ^= right_sides[pivot];
 			}
 		}
@@ -226,8 +254,11 @@ struct affine_propagator
 			{
 				state.tick_search();
 				set_bits += std::popcount(basis[row * word_count + word]);
-				if (set_bits > 1) break;
+
+				if (set_bits > 1)
+					break;
 			}
+
 			if (set_bits == 1 && !state.set_value(atom_nodes[pivot_columns[row]], right_sides[row] != 0))
 				return false;
 		}

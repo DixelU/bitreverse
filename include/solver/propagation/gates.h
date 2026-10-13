@@ -11,7 +11,7 @@ struct gate_propagator
 	explicit gate_propagator(const compiled_circuit& compiled) :
 		circuit(compiled) {}
 
-	bool imply(solver_state& state, node_id gate) const
+	bool imply(solver_state& state, const node_id gate) const
 	{
 		state.tick_search();
 		const std::uint8_t operation = circuit.operations[gate];
@@ -20,6 +20,7 @@ struct gate_propagator
 
 		const node_id lhs_id = circuit.inputs[gate][0];
 		const node_id rhs_id = circuit.inputs[gate][1];
+
 		int8_t output = state.value_of(gate);
 		int8_t lhs = state.value_of(lhs_id);
 		int8_t rhs = state.value_of(rhs_id);
@@ -64,9 +65,7 @@ struct gate_propagator
 			rhs = state.value_of(rhs_id);
 
 			if (output == 1)
-				return
-					state.set_value(lhs_id, true) &&
-					state.set_value(rhs_id, true);
+				return state.set_value(lhs_id, true) && state.set_value(rhs_id, true);
 			if (output == 0 && lhs == 1)
 				return state.set_value(rhs_id, false);
 			if (output == 0 && rhs == 1)
@@ -92,9 +91,7 @@ struct gate_propagator
 			rhs = state.value_of(rhs_id);
 
 			if (output == 0)
-				return
-					state.set_value(lhs_id, false) &&
-					state.set_value(rhs_id, false);
+				return state.set_value(lhs_id, false) && state.set_value(rhs_id, false);
 			if (output == 1 && lhs == 0)
 				return state.set_value(rhs_id, true);
 			if (output == 1 && rhs == 0)
@@ -105,9 +102,7 @@ struct gate_propagator
 		throw std::logic_error("Unknown gate operation");
 	}
 
-	bool propagate_pending(
-		solver_state& state,
-		size_t& cursor) const
+	bool propagate_pending(solver_state& state, size_t& cursor) const
 	{
 		while (cursor < state.trail.size())
 		{
@@ -119,8 +114,10 @@ struct gate_propagator
 				return false;
 
 			for (const node_id parent : circuit.parents[id])
+			{
 				if (!imply(state, parent))
 					return false;
+			}
 		}
 		return true;
 	}

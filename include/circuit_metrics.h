@@ -30,6 +30,7 @@ inline circuit_metrics measure_circuit(const std::vector<bit_tracker>& outputs)
 {
 	using namespace collision_resolution::solver_core;
 	std::vector<counted_ptr<details::bitstate>> roots;
+
 	roots.reserve(outputs.size());
 	for (const auto& output : outputs)
 	{
@@ -37,12 +38,16 @@ inline circuit_metrics measure_circuit(const std::vector<bit_tracker>& outputs)
 			throw std::invalid_argument("Circuit metrics require non-null output bits");
 		roots.push_back(output.bit_state);
 	}
+
 	const compiled_circuit graph(std::move(roots));
 	circuit_metrics result;
+
 	result.roots = outputs.size();
 	result.nodes = graph.nodes.size();
+
 	std::vector<size_t> depths(result.nodes), remaining_inputs(result.nodes);
 	std::vector<node_id> ready;
+
 	ready.reserve(result.nodes);
 
 	for (node_id id = 0; id < result.nodes; ++id)
@@ -50,24 +55,31 @@ inline circuit_metrics measure_circuit(const std::vector<bit_tracker>& outputs)
 		const auto operation = graph.nodes[id]->operation;
 		switch (operation)
 		{
-		case '*': ++result.inputs; break;
-		case '=': ++result.constants; break;
-		case '!': ++result.not_gates; break;
-		case '&': ++result.and_gates; break;
-		case '|': ++result.or_gates; break;
-		case '^': ++result.xor_gates; break;
-		default: throw std::invalid_argument("Circuit metrics encountered an unknown operation");
+			case '*': ++result.inputs; break;
+			case '=': ++result.constants; break;
+			case '!': ++result.not_gates; break;
+			case '&': ++result.and_gates; break;
+			case '|': ++result.or_gates; break;
+			case '^': ++result.xor_gates; break;
+			default: throw std::invalid_argument("Circuit metrics encountered an unknown operation");
 		}
+
 		const auto arity = details::operation_args_count[operation];
 		remaining_inputs[id] = arity;
 		// Edges/fanout count argument slots, including a repeated operand.
 		result.edges += arity;
 		result.max_fanout = std::max(result.max_fanout, graph.parents[id].size());
+
 		for (size_t argument = 0; argument < arity; ++argument)
+		{
 			if (graph.inputs[id][argument] == no_node)
 				throw std::invalid_argument("Circuit metrics encountered a missing operand");
-		if (!arity) ready.push_back(id);
+		}
+
+		if (!arity)
+			ready.push_back(id);
 	}
+
 	result.gates = result.not_gates + result.and_gates + result.or_gates + result.xor_gates;
 
 	// compiled_circuit IDs follow discovery order, which is not topological:
@@ -77,14 +89,17 @@ inline circuit_metrics measure_circuit(const std::vector<bit_tracker>& outputs)
 	{
 		const node_id id = ready[cursor];
 		const size_t depth = depths[id];
+
 		if (result.widths.size() <= depth)
 		{
 			result.widths.resize(depth + 1);
 			result.gate_widths.resize(depth + 1);
 		}
+
 		++result.widths[depth];
 		if (details::operation_args_count[graph.nodes[id]->operation])
 			++result.gate_widths[depth];
+
 		for (const node_id parent : graph.parents[id])
 		{
 			depths[parent] = std::max(depths[parent], depth + 1);
@@ -110,20 +125,25 @@ inline circuit_metrics measure_circuit(const std::vector<bit_tracker>& outputs)
 			seen_roots[root] = true;
 			++result.distinct_roots;
 		}
+
 		const size_t depth = depths[root];
-		if (result.output_depths.empty()) result.min_output_depth = depth;
+		if (result.output_depths.empty())
+			result.min_output_depth = depth;
+
 		result.min_output_depth = std::min(result.min_output_depth, depth);
 		result.max_output_depth = std::max(result.max_output_depth, depth);
 		output_depth_sum += depth;
 		result.output_depths.push_back(depth);
 	}
+
 	if (result.roots)
 		result.mean_output_depth = static_cast<double>(output_depth_sum / result.roots);
+
 	return result;
 }
 
 template<size_t N>
-inline circuit_metrics measure_circuit(const int_tracker<N>& output)
+circuit_metrics measure_circuit(const int_tracker<N>& output)
 {
 	return measure_circuit(std::vector<bit_tracker>(output.bits.begin(), output.bits.end()));
 }

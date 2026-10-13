@@ -20,6 +20,7 @@
 #include <cinttypes>
 #include <optional>
 #include <set>
+#include <ranges>
 #include <type_traits>
 
 #include "counted_ptr.h"

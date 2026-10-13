@@ -18,9 +18,11 @@ integer<160> sha1(std::vector<integer<8>> message)
 	using uint160 = integer<160>;
 	const std::uint64_t message_size_bits =
 		static_cast<std::uint64_t>(message.size()) * 8;
+
 	message.push_back(0x80);
 	while (message.size() % 64 != 56)
 		message.push_back(0);
+
 	for (size_t byte = 0; byte < 8; ++byte)
 		message.push_back(static_cast<std::uint8_t>(message_size_bits >> (56 - byte * 8)));
 
@@ -28,6 +30,7 @@ integer<160> sha1(std::vector<integer<8>> message)
 	{
 		return (word << shift) | (word >> (32 - shift));
 	};
+
 	uint32 state[5] = {0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0};
 	for (size_t block = 0; block < message.size(); block += 64)
 	{
@@ -39,9 +42,13 @@ integer<160> sha1(std::vector<integer<8>> message)
 				(uint32(message[offset + 1]) << 16) |
 				(uint32(message[offset + 2]) << 8) | uint32(message[offset + 3]);
 		}
+
 		for (size_t word = 16; word < 80; ++word)
-			words[word] = rotate(words[word - 3] ^ words[word - 8] ^
+		{
+			words[word] = rotate(
+				words[word - 3] ^ words[word - 8] ^
 				words[word - 14] ^ words[word - 16], 1);
+		}
 
 		uint32 a = state[0], b = state[1], c = state[2], d = state[3], e = state[4];
 		for (size_t round = 0; round < 80; ++round)
@@ -68,17 +75,20 @@ integer<160> sha1(std::vector<integer<8>> message)
 				function = b ^ c ^ d;
 				constant = 0xca62c1d6;
 			}
+
 			uint32 next = rotate(a, 5);
 			next += function;
 			next += e;
 			next += constant;
 			next += words[round];
+
 			e = d;
 			d = c;
 			c = rotate(b, 30);
 			b = a;
 			a = next;
 		}
+
 		state[0] += a;
 		state[1] += b;
 		state[2] += c;
@@ -89,6 +99,7 @@ integer<160> sha1(std::vector<integer<8>> message)
 	uint160 digest = 0;
 	for (size_t word = 0; word < 5; ++word)
 		digest |= uint160(state[word]) << (128 - word * 32);
+
 	return digest;
 }
 

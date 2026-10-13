@@ -6,16 +6,19 @@
 
 struct search_budget
 {
-	size_t limit, steps{0};
-	solver_statistics* statistics;
+	size_t limit{0}, steps{0};
+	solver_statistics* statistics{nullptr};
 
-	void tick(size_t amount = 1)
+	void tick(const size_t amount = 1)
 	{
 		if (limit && amount > limit - steps)
 			throw solver_limit();
+
 		// Saturate statistics in unlimited mode instead of wrapping the counter.
 		steps += std::min(amount, std::numeric_limits<size_t>::max() - steps);
-		if (statistics) statistics->search_steps = steps;
+
+		if (statistics)
+			statistics->search_steps = steps;
 	}
 };
 
@@ -55,12 +58,13 @@ struct solver_state
 				values[id] = static_cast<int8_t>(circuit.nodes[id]->state);
 	}
 
-	void tick_search(size_t amount = 1) const
+	void tick_search(const size_t amount = 1) const
 	{
-		if (budget) budget->tick(amount);
+		if (budget)
+			budget->tick(amount);
 	}
 
-	int8_t value_of(node_id id) const
+	int8_t value_of(const node_id id) const
 	{
 		if (id == no_node)
 			return -1;
@@ -68,7 +72,7 @@ struct solver_state
 		return values[id];
 	}
 
-	bool set_value(node_id id, bool value)
+	bool set_value(const node_id id, const bool value)
 	{
 		const int8_t current = value_of(id);
 		if (current != -1)
@@ -87,13 +91,14 @@ struct solver_state
 		propagation_head = trail.size();
 	}
 
-	void undo_to(size_t mark)
+	void undo_to(const size_t mark)
 	{
 		while (trail.size() > mark)
 		{
 			values[trail.back()] = -1;
 			trail.pop_back();
 		}
+		
 		propagation_head = std::min(propagation_head, mark);
 	}
 };

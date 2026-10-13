@@ -63,6 +63,7 @@ class partial_assert_context
 		std::unordered_map<node_t, unsigned char> color;
 		std::unordered_map<node_t, std::size_t> depths;
 		std::vector<std::pair<node_ptr, bool>> stack;
+
 		for (const auto& root : roots)
 		{
 			stack.emplace_back(root, false);
@@ -72,6 +73,7 @@ class partial_assert_context
 				stack.pop_back();
 				if (!node)
 					throw std::invalid_argument("Partial assertion has a null expression node");
+
 				const node_t raw = node.get();
 				const auto op = node->operation;
 				if (finish)
@@ -83,6 +85,7 @@ class partial_assert_context
 						if (op == '^') depth = std::max(depth, depths.at(node->_2.get()));
 						++depth;
 					}
+
 					depths.emplace(raw, depth);
 					result.affine_depth = std::max(result.affine_depth, depth);
 					result.atoms += op == '*' || op == '&' || op == '|';
@@ -90,6 +93,7 @@ class partial_assert_context
 					result.postorder.push_back(std::move(node));
 					continue;
 				}
+
 				const auto existing = color.find(raw);
 				if (existing != color.end())
 				{
@@ -97,15 +101,19 @@ class partial_assert_context
 						throw std::invalid_argument("Partial assertion has a cyclic expression");
 					continue;
 				}
+
 				if (op != '=' && op != '*' && op != '!' && op != '^' && op != '&' && op != '|')
 					throw std::invalid_argument("Partial assertion has an unsupported operation");
 				if (color.size() >= options_.max_nodes)
 					throw partial_assert_limit("Partial assertion node budget exceeded");
+
 				color.emplace(raw, 1);
 				stack.emplace_back(node, true);
 				const auto arity = details::operation_args_count[op];
-				if (arity == 2) stack.emplace_back(node->_2, false);
-				if (arity >= 1) stack.emplace_back(node->_1, false);
+				if (arity == 2)
+					stack.emplace_back(node->_2, false);
+				if (arity >= 1)
+					stack.emplace_back(node->_1, false);
 			}
 		}
 		return result;
@@ -128,7 +136,8 @@ class partial_assert_context
 	{
 		std::vector<node_ptr> result;
 		result.reserve(requirements_.size());
-		for (const auto& requirement : requirements_) result.push_back(requirement.bit_state);
+		for (const auto& requirement : requirements_)
+			result.push_back(requirement.bit_state);
 		return result;
 	}
 
@@ -143,14 +152,17 @@ class partial_assert_context
 				rebuilt.emplace(raw, details::make_boolean_constant(fact->second));
 				continue;
 			}
+
 			const auto arity = details::operation_args_count[node->operation];
 			if (arity == 0)
 			{
 				rebuilt.emplace(raw, node);
 				continue;
 			}
+
 			const auto& lhs = rebuilt.at(node->_1.get());
 			const node_ptr rhs = arity == 2 ? rebuilt.at(node->_2.get()) : node_ptr{};
+
 			if (lhs == node->_1 && rhs == node->_2)
 				rebuilt.emplace(raw, node);
 			else
@@ -160,7 +172,7 @@ class partial_assert_context
 	}
 
 public:
-	explicit partial_assert_context(partial_assert_options options = {}) : options_(options)
+	explicit partial_assert_context(const partial_assert_options& options = {}) : options_(options)
 	{
 		if (!options_.max_nodes || !options_.max_steps || !options_.max_affine_bytes)
 			throw std::invalid_argument("Partial assertion node, step, and byte budgets must be positive");
@@ -171,19 +183,26 @@ public:
 	void partial_assert(bit_tracker condition)
 	{
 		using namespace collision_resolution::solver_core;
+
 		const auto started = std::chrono::steady_clock::now();
+
 		auto pending = requirements_;
 		pending.push_back(std::move(condition));
+
 		auto selected = roots();
 		selected.push_back(pending.back().bit_state);
+
 		const auto graph = inspect(selected);
 		const compiled_circuit circuit(std::move(selected));
+
 		solver_statistics next_statistics;
 		next_statistics.nodes = circuit.nodes.size();
 		next_statistics.variables = circuit.variables.size();
+
 		search_budget budget{options_.max_steps, 0, &next_statistics};
 		solver_state state(circuit, &next_statistics, &budget);
 		gate_propagator gates(circuit);
+
 		try
 		{
 			// Earlier facts are consequences of retained requirements, so they
@@ -191,25 +210,34 @@ public:
 			for (std::size_t id = 0; id < circuit.nodes.size(); ++id)
 			{
 				const auto fact = facts_.find(circuit.nodes[id].get());
-				if (fact == facts_.end()) continue;
+				if (fact == facts_.end())
+					continue;
+
 				budget.tick();
+
 				if (!state.set_value(id, fact->second))
 					throw partial_assert_conflict();
 			}
 			for (const auto id : circuit.root_ids)
 			{
 				budget.tick();
-				if (!state.set_value(id, true)) throw partial_assert_conflict();
+				if (!state.set_value(id, true))
+					throw partial_assert_conflict();
 			}
+
 			std::size_t cursor = 0;
-			if (!gates.propagate_pending(state, cursor)) throw partial_assert_conflict();
+			if (!gates.propagate_pending(state, cursor))
+				throw partial_assert_conflict();
+
 			// Often an early checkpoint already resolves every variable. Avoid
 			// allocating a dense affine system when there is nothing left to infer.
-			const bool unresolved = std::any_of(circuit.variables.begin(), circuit.variables.end(),
-				[&](node_id id) { return state.value_of(id) == -1; });
+			const bool unresolved = std::ranges::any_of(
+				circuit.variables, [&](const node_id id) { return state.value_of(id) == -1; });
+
 			auto selected_options = bounded_affine_options(graph, {});
 			selected_options.affine_reasoning = selected_options.affine_reasoning && unresolved;
 			affine_propagator affine(circuit, selected_options);
+
 			next_statistics.affine_atoms = affine.atom_count;
 			next_statistics.affine_enabled = affine.active;
 			while (affine.active)
@@ -217,22 +245,32 @@ public:
 				const auto mark = state.trail.size();
 				if (!affine.propagate(state) || !gates.propagate_pending(state, cursor))
 					throw partial_assert_conflict();
-				if (mark == state.trail.size()) break;
+
+				if (mark == state.trail.size())
+					break;
 			}
 		}
 		catch (const solver_limit&)
 		{
 			throw partial_assert_limit("Partial assertion propagation step budget exceeded");
 		}
+
 		std::unordered_map<node_t, bool> next_facts;
 		for (std::size_t id = 0; id < circuit.nodes.size(); ++id)
+		{
 			if (state.value_of(id) != -1)
 				next_facts.emplace(circuit.nodes[id].get(), state.value_of(id) != 0);
+		}
+
 		std::size_t next_known = 0;
-		for (const auto id : circuit.variables) next_known += state.value_of(id) != -1;
+		for (const auto id : circuit.variables)
+			next_known += state.value_of(id) != -1;
+
 		next_statistics.elapsed = std::chrono::steady_clock::now() - started;
+
 		requirements_.swap(pending);
 		facts_.swap(next_facts);
+
 		known_variables_ = next_known;
 		statistics_ = next_statistics;
 	}
@@ -255,10 +293,15 @@ public:
 		std::vector<node_ptr> selected;
 		for (const auto& value : values)
 			for (const auto& bit : value.bits) selected.push_back(bit.bit_state);
+
 		auto rebuilt = replacements(selected);
 		auto result = values;
 		for (auto& value : result)
-			for (auto& bit : value.bits) bit.bit_state = rebuilt.at(bit.bit_state.get());
+		{
+			for (auto& bit : value.bits)
+				bit.bit_state = rebuilt.at(bit.bit_state.get());
+		}
+
 		return result;
 	}
 
@@ -277,7 +320,7 @@ public:
 	// max_solutions == 0 enumerates all models; returning false stops the stream.
 	// This is the only operation in this context that makes search decisions.
 	std::size_t solve(const std::vector<bit_tracker>& inputs,
-		collision_resolution::solution_callback callback = {},
+		const collision_resolution::solution_callback& callback = {},
 		std::size_t max_solutions = 1, const solver_options& options = {},
 		solver_statistics* statistics = nullptr) const
 	{
@@ -288,16 +331,22 @@ public:
 				throw std::invalid_argument("Partial assertion solve inputs must be original input leaves");
 			selected.push_back(input.bit_state);
 		}
+
 		const auto graph = inspect(selected);
-		auto circuit = std::make_shared<const compiled_circuit>(std::move(selected));
+		const auto circuit = std::make_shared<const compiled_circuit>(std::move(selected));
+
 		std::vector<std::pair<std::size_t, bool>> bindings;
 		for (std::size_t i = 0; i < requirements_.size(); ++i)
 			bindings.emplace_back(circuit->root_ids[i], true);
+
 		// Reuse earlier deductions even when the final graph crosses an affine
 		// limit. They are justified by the original requirements retained above.
 		for (std::size_t id = 0; id < circuit->nodes.size(); ++id)
+		{
 			if (const auto fact = facts_.find(circuit->nodes[id].get()); fact != facts_.end())
 				bindings.emplace_back(id, fact->second);
+		}
+
 		std::size_t count = 0;
 		return collision_resolution::solve_compiled_stream(circuit, bindings,
 			[&](const collision_resolution::crs_state& solution)

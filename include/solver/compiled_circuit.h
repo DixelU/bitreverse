@@ -16,25 +16,39 @@ struct parent_adjacency
 	std::vector<size_t> offsets;
 	std::vector<node_id> edges;
 
-	std::span<const node_id> operator[](node_id id) const
+	std::span<const node_id> operator[](const node_id id) const
 	{
-		return std::span<const node_id>(edges).subspan(
+		return std::span(edges).subspan(
 			offsets[id], offsets[id + 1] - offsets[id]);
 	}
 
 	void build(const std::vector<std::array<node_id, 2>>& inputs)
 	{
 		offsets.assign(inputs.size() + 1, 0);
+
 		for (const auto& children : inputs)
+		{
 			for (const node_id child : children)
-				if (child != no_node) ++offsets[child + 1];
+			{
+				if (child != no_node)
+					++offsets[child + 1];
+			}
+		}
+
 		for (size_t id = 1; id < offsets.size(); ++id)
 			offsets[id] += offsets[id - 1];
 		edges.resize(offsets.back());
+
 		// Fill backwards using the row ends as cursors, then restore offsets.
 		for (node_id id = inputs.size(); id-- != 0;)
+		{
 			for (const node_id child : inputs[id])
-				if (child != no_node) edges[--offsets[child + 1]] = id;
+			{
+				if (child != no_node)
+					edges[--offsets[child + 1]] = id;
+			}
+		}
+
 		for (size_t id = 0; id < inputs.size(); ++id)
 			offsets[id] = offsets[id + 1];
 		offsets.back() = edges.size();
@@ -56,7 +70,7 @@ struct compiled_circuit
 
 	explicit compiled_circuit(counted_ptr<details::bitstate> root) :
 		compiled_circuit(
-			std::vector<counted_ptr<details::bitstate>>{std::move(root)})
+			std::vector{std::move(root)})
 	{
 	}
 
@@ -105,9 +119,8 @@ struct compiled_circuit
 				details::operation_args_count[operation];
 			const counted_ptr<details::bitstate>* children[2] =
 				{&current->_1, &current->_2};
-			for (std::uint8_t index = 0;
-				index < argument_count;
-				++index)
+
+			for (std::uint8_t index = 0; index < argument_count; ++index)
 			{
 				const node_id child = add_node(*children[index]);
 				inputs[id][index] = child;
@@ -117,13 +130,10 @@ struct compiled_circuit
 
 		// High-fanout inputs participate in more constraints and tend to
 		// expose contradictions earlier.
-		std::stable_sort(
-			variables.begin(),
-			variables.end(),
-			[&](node_id lhs, node_id rhs)
-			{
-				return parents[lhs].size() > parents[rhs].size();
-			});
+		std::ranges::stable_sort(variables, [&](node_id lhs, node_id rhs)
+		{
+			return parents[lhs].size() > parents[rhs].size();
+		});
 	}
 };
 
@@ -139,9 +149,11 @@ inline void validate_bindings(
 	const compiled_circuit& circuit,
 	const std::vector<std::pair<node_id, bool>>& bindings)
 {
-	for (const auto& [id, value] : bindings)
+	for (const auto id : bindings | std::ranges::views::keys)
+	{
 		if (id >= circuit.nodes.size())
 			throw std::out_of_range("Compiled circuit binding has an invalid node ID");
+	}
 }
 
 #endif // DIXELU_BITREVERSE_SOLVER_COMPILED_CIRCUIT_H
