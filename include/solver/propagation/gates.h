@@ -1,9 +1,15 @@
 #ifndef DIXELU_BITREVERSE_SOLVER_PROPAGATION_GATES_H
 #define DIXELU_BITREVERSE_SOLVER_PROPAGATION_GATES_H
 
-// Internal header: included by bitreverse.h inside
-// dixelu::bitreverse::collision_resolution::solver_core.
+#include <cstdint>
+#include <stdexcept>
 
+#include "../solver_state.h"
+
+namespace dixelu::bitreverse::collision_resolution::solver_core
+{
+
+// Native unit propagation over the circuit's gates.
 struct gate_propagator
 {
 	const compiled_circuit& circuit;
@@ -122,5 +128,7 @@ struct gate_propagator
 		return true;
 	}
 };
+
+} // namespace dixelu::bitreverse::collision_resolution::solver_core
 
 #endif // DIXELU_BITREVERSE_SOLVER_PROPAGATION_GATES_H

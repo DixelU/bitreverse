@@ -1,57 +1,84 @@
 #ifndef DIXELU_BITREVERSE_SOLVER_SOLVE_H
 #define DIXELU_BITREVERSE_SOLVER_SOLVE_H
 
-// Internal facade: included by bitreverse.h inside
-// dixelu::bitreverse::collision_resolution. This is the single dispatch point
-// for optional search engines.
+#include <memory>
+#include <utility>
+#include <vector>
 
-using solution_callback =
-	std::function<bool(const crs_state&)>;
+#include "compiled_circuit.h"
+#include "options.h"
+#include "search/cdcl.h"
+#include "search/dpll.h"
+#include "search/session.h"
+#include "solution.h"
+#include "statistics.h"
 
+namespace dixelu::bitreverse::collision_resolution
+{
+namespace solver_core
+{
+
+struct search_result
+{
+	size_t solution_count{0};
+	solutions_t solutions;
+};
+
+template<typename Engine>
+search_result run_engine(search_request request)
+{
+	Engine engine(std::move(request));
+	engine.run();
+	return {engine.solution_count, std::move(engine.solutions)};
+}
+
+// The single dispatch point between the search engines.
+inline search_result search(search_request request)
+{
+	if (request.options.conflict_learning)
+		return run_engine<cdcl_engine>(std::move(request));
+	return run_engine<dpll_engine>(std::move(request));
+}
+
+inline search_request request_for(const bit_tracker& bit, bool target)
+{
+	return {
+		.circuit = std::make_shared<const compiled_circuit>(bit.bit_state),
+		.bindings = {{0, target}}};
+}
+
+} // namespace solver_core
+
+// All complete assignments of the unknowns that drive `bit` to `target`, or
+// only the first one found.
 inline solutions_t solve(
-	bit_tracker& bit,
+	const bit_tracker& bit,
 	bool target,
 	bool first_only = false,
 	const solver_options& options = {},
 	solver_statistics* statistics = nullptr)
 {
-	if (options.conflict_learning)
-		return cdcl::resolve(
-			bit,
-			target,
-			first_only,
-			options,
-			statistics);
-
-	return dpll::resolve(
-		bit,
-		target,
-		first_only,
-		options,
-		statistics);
+	auto request = solver_core::request_for(bit, target);
+	request.first_only = first_only;
+	request.options = options;
+	request.statistics = statistics;
+	return solver_core::search(std::move(request)).solutions;
 }
 
+// Streams solutions without retaining them; returns how many were found.
 inline size_t solve_stream(
-	bit_tracker& bit,
+	const bit_tracker& bit,
 	bool target,
 	solution_callback on_solution,
 	const solver_options& options = {},
 	solver_statistics* statistics = nullptr)
 {
-	if (options.conflict_learning)
-		return cdcl::resolve_stream(
-			bit,
-			target,
-			std::move(on_solution),
-			options,
-			statistics);
-
-	return dpll::resolve_stream(
-		bit,
-		target,
-		std::move(on_solution),
-		options,
-		statistics);
+	auto request = solver_core::request_for(bit, target);
+	request.collect_solutions = false;
+	request.on_solution = std::move(on_solution);
+	request.options = options;
+	request.statistics = statistics;
+	return solver_core::search(std::move(request)).solution_count;
 }
 
 // Reuse compiled adjacency with fresh assignments and search state. Only
@@ -62,27 +89,20 @@ inline size_t solve_stream(
 // max_search_steps throws solver_limit, never an incomplete zero count.
 inline size_t solve_compiled_stream(
 	std::shared_ptr<const solver_core::compiled_circuit> circuit,
-	const std::vector<std::pair<solver_core::node_id, bool>>& bindings,
+	std::vector<std::pair<solver_core::node_id, bool>> bindings,
 	solution_callback on_solution,
 	const solver_options& options = {},
 	solver_statistics* statistics = nullptr)
 {
-	solver_core::validate_bindings(
-		solver_core::require_compiled_circuit(circuit), bindings);
-	if (options.conflict_learning)
-	{
-		cdcl::engine solver(
-			std::move(circuit), bindings, false, false,
-			std::move(on_solution), options, statistics);
-		(void)solver.run();
-		return solver.solution_count;
-	}
-
-	dpll::engine solver(
-		std::move(circuit), bindings, false, false,
-		std::move(on_solution), options, statistics);
-	(void)solver.run();
-	return solver.solution_count;
+	return solver_core::search({
+		.circuit = std::move(circuit),
+		.bindings = std::move(bindings),
+		.collect_solutions = false,
+		.on_solution = std::move(on_solution),
+		.options = options,
+		.statistics = statistics}).solution_count;
 }
+
+} // namespace dixelu::bitreverse::collision_resolution
 
 #endif // DIXELU_BITREVERSE_SOLVER_SOLVE_H

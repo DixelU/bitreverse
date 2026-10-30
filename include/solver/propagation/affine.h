@@ -1,9 +1,21 @@
 #ifndef DIXELU_BITREVERSE_SOLVER_PROPAGATION_AFFINE_H
 #define DIXELU_BITREVERSE_SOLVER_PROPAGATION_AFFINE_H
 
-// Internal header: included by bitreverse.h inside
-// dixelu::bitreverse::collision_resolution::solver_core.
+#include <algorithm>
+#include <bit>
+#include <cstdint>
+#include <stdexcept>
+#include <vector>
 
+#include "../options.h"
+#include "../solver_state.h"
+
+namespace dixelu::bitreverse::collision_resolution::solver_core
+{
+
+// GF(2) reasoning over XOR/NOT regions. Every node is expressed as an affine
+// form over "atoms" (unknowns and AND/OR gates); assigned non-atom nodes give
+// linear equations, and Gaussian elimination exposes forced atoms.
 struct affine_propagator
 {
 	const compiled_circuit& circuit;
@@ -266,5 +278,7 @@ struct affine_propagator
 		return true;
 	}
 };
+
+} // namespace dixelu::bitreverse::collision_resolution::solver_core
 
 #endif // DIXELU_BITREVERSE_SOLVER_PROPAGATION_AFFINE_H

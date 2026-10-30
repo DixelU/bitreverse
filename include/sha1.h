@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "bitreverse.h"
+#include "hash_common.h"
 
 namespace dixelu::bitreverse::hash
 {
@@ -15,37 +16,21 @@ template<template<size_t> typename integer>
 integer<160> sha1(std::vector<integer<8>> message)
 {
 	using uint32 = integer<32>;
-	using uint160 = integer<160>;
-	const std::uint64_t message_size_bits =
-		static_cast<std::uint64_t>(message.size()) * 8;
+	using detail::byte_order;
+	using detail::rotl;
 
-	message.push_back(0x80);
-	while (message.size() % 64 != 56)
-		message.push_back(0);
-
-	for (size_t byte = 0; byte < 8; ++byte)
-		message.push_back(static_cast<std::uint8_t>(message_size_bits >> (56 - byte * 8)));
-
-	const auto rotate = [](const uint32& word, size_t shift)
-	{
-		return (word << shift) | (word >> (32 - shift));
-	};
+	detail::pad(message, byte_order::big);
 
 	uint32 state[5] = {0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476, 0xc3d2e1f0};
 	for (size_t block = 0; block < message.size(); block += 64)
 	{
 		uint32 words[80];
 		for (size_t word = 0; word < 16; ++word)
-		{
-			const size_t offset = block + word * 4;
-			words[word] = (uint32(message[offset]) << 24) |
-				(uint32(message[offset + 1]) << 16) |
-				(uint32(message[offset + 2]) << 8) | uint32(message[offset + 3]);
-		}
+			words[word] = detail::load_word(message, block + word * 4, byte_order::big);
 
 		for (size_t word = 16; word < 80; ++word)
 		{
-			words[word] = rotate(
+			words[word] = rotl(
 				words[word - 3] ^ words[word - 8] ^
 				words[word - 14] ^ words[word - 16], 1);
 		}
@@ -76,7 +61,7 @@ integer<160> sha1(std::vector<integer<8>> message)
 				constant = 0xca62c1d6;
 			}
 
-			uint32 next = rotate(a, 5);
+			uint32 next = rotl(a, 5);
 			next += function;
 			next += e;
 			next += constant;
@@ -84,7 +69,7 @@ integer<160> sha1(std::vector<integer<8>> message)
 
 			e = d;
 			d = c;
-			c = rotate(b, 30);
+			c = rotl(b, 30);
 			b = a;
 			a = next;
 		}
@@ -96,11 +81,7 @@ integer<160> sha1(std::vector<integer<8>> message)
 		state[4] += e;
 	}
 
-	uint160 digest = 0;
-	for (size_t word = 0; word < 5; ++word)
-		digest |= uint160(state[word]) << (128 - word * 32);
-
-	return digest;
+	return detail::pack_digest(state, byte_order::big);
 }
 
 } // namespace dixelu::bitreverse::hash

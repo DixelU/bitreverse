@@ -1,44 +1,67 @@
-# Shallower arithmetic circuits
+# Arithmetic circuits
 
-The arithmetic changes implement the main circuit-topology proposals from the
-[shared discussion](https://chatgpt.com/share/6aab92c7-5d10-83eb-8851-1393186adeaa).
-They change how `int_tracker<N>` constructs Boolean expressions, preserving its
-unsigned, modulo-`2^N` arithmetic and the existing inverse/solver interfaces.
+`int_tracker<N>` (in `tracker.h`) is an unsigned N-bit integer of tracked bits.
+Arithmetic wraps modulo 2^N. `bits` is stored most significant bit first.
+`itu8`, `itu16`, `itu32` and `itu64` are aliases for common widths. This page
+describes the Boolean circuits the operators build.
 
-## Implementation
+## Gates
 
-- Addition uses a Brent-Kung parallel-prefix carry scan. It supports arbitrary
-  widths and a symbolic input carry. Fully concrete inputs use a direct Boolean
-  loop; no prefix graph is needed for them.
-- Subtraction uses the same scan for `lhs + ~rhs + 1`.
-  `self_sub_ret_carry` still ignores its incoming carry and returns **true for
-  no unsigned underflow**. `self_add_ret_carry` still consumes and returns carry.
-- Multiplication builds AND partial-product rows, compresses each group of three
-  rows into two carry-save rows, and performs one final prefix addition. Carries
-  above the result width are discarded. The operand with fewer potentially
-  nonzero bits supplies the rows, making a sparse constant equally useful on
-  either side. Compression reuses the row buffer in place, so it does not
-  allocate a new vector at every tree level. This is a row-based carry-save
-  tree, without a Dadda column scheduler.
-- Division retains non-restoring division and uses the prefix adder at each
-  iteration. Its outer remainder dependency is still sequential. Its temporary
-  bit arrays have fixed capacity and live on the stack, so division itself no
-  longer allocates vector storage.
-- A known divisor of one or a power of two becomes bit wiring and zero constants.
-  Other constant divisors use `bit_width(divisor) + 1` remainder bits, including
-  the sign bit. Constants wider than a native integer are inspected bit by bit.
-- Known leading zero dividend bits are skipped. A small constant numerator thus
-  needs fewer iterations, while the full variable divisor remains available.
-  No high divisor bits are truncated.
+Every gate is built by `make_bitstate_operation`, which folds constant operands
+and applies local identities: idempotence, complements and absorption for
+AND/OR, cancellation and complements for XOR, and double negation. The result
+can therefore be an existing node. Unknown leaves keep their identity: a rule
+such as replacing `!unknown` by `unknown` would be unsound when other
+expressions use the same leaf, and is not applied.
 
-Division remains a total bit-vector operation: dividing by zero returns an
-all-ones quotient and the original dividend as remainder. Skipped quotient bits
-retain a divisor-zero condition when the divisor is symbolic. In particular,
-`0 / x` cannot become an unconditional zero, nor can `x / x` become an
-unconditional one. These cases are included in the exhaustive tests.
+Fully concrete operands fold to constants, so `int_tracker` with only known
+values computes ordinary results. The operators are `constexpr`; during
+constant evaluation each constant is a fresh node.
 
-When one concrete divisor is reused, `prepare_divisor` scans and classifies it
-once and retains its significant-bit wiring:
+## Addition and subtraction
+
+- Addition uses a Brent-Kung parallel-prefix carry scan: linear gate count and
+  logarithmic carry depth, for any width, with a symbolic carry-in allowed.
+  Fully concrete operands use a direct loop.
+- `self_add_ret_carry(rhs, carry)` uses `carry` as carry-in and returns the
+  carry-out in it.
+- Subtraction computes `lhs + ~rhs + 1` with the same scan.
+  `self_sub_ret_carry(rhs, carry)` ignores the incoming `carry` and sets it to
+  true when the unsigned subtraction does not underflow.
+- Unary minus is `~x + 1`.
+
+## Multiplication
+
+Multiplication builds one partial-product row (the multiplicand shifted and
+ANDed with one multiplier bit) for every multiplier bit that is not constant
+zero. The operand with fewer such bits is the multiplier, so a sparse constant
+helps on either side. Groups of three rows are compressed to two by carry-save
+adders, without horizontal carries, until two rows remain; one prefix addition
+then produces the result. Carries above bit N-1 are discarded.
+
+## Division and remainder
+
+`/`, `%` and `divmod(divisor, remainder)` use non-restoring division with the
+prefix adder in each step. The steps stay sequential. The divisor is classified
+first:
+
+| Divisor | Circuit |
+|---|---|
+| Constant zero | No gates: quotient all ones, remainder equal to the dividend |
+| Constant power of two | Wiring: a shift and the low bits |
+| Other constant | Remainder arithmetic on `bit_width(divisor) + 1` bits |
+| Symbolic | Remainder arithmetic on N + 1 bits |
+
+Leading dividend bits that are constant zero are skipped, so a small constant
+numerator needs fewer steps; no divisor bits are dropped.
+
+Division is total. Dividing by zero gives an all-ones quotient and the dividend
+as remainder, for symbolic divisors as well: quotient bits skipped because of
+known leading zeros stay tied to "divisor == 0". Hence `0 / x` is not
+simplified to 0 and `x / x` is not simplified to 1. A remainder output may
+alias either operand.
+
+`prepare_divisor` classifies a constant divisor once for repeated use:
 
 ```cpp
 namespace br = dixelu::bitreverse;
@@ -49,95 +72,31 @@ const auto quotient = value / by_ten;
 const auto remainder = value % by_ten;
 ```
 
-The prepared object also provides `divide`, `modulo`, and `divmod` methods. It
-accepts only concrete divisors and throws `std::invalid_argument` for a symbolic
-one. Each result still needs its own Boolean graph, but repeated calls avoid
-rescanning the same right-hand side and bypass per-bit constant-XOR dispatch.
-Ordinary `int_tracker / int_tracker` and `%` remain supported.
+The prepared divisor also has `divide`, `modulo` and `divmod` members. It
+accepts an `int_tracker<N>` or an integer, and throws `std::invalid_argument`
+for a divisor with unknown bits. Each division still builds its own circuit.
 
-Inputs keep their original symbolic identities. The suggestion to replace
-`!unknown` with `unknown` is unsound when other expressions refer to the same
-input, and is not applied. In-place operations and a remainder output that
-aliases either division operand are supported. Compile-time evaluation remains
-available, including symbolic construction using the new scratch containers.
+## Shifts and other operations
 
-## Measured circuit shape
+- Shifting by a `size_t` is logical; an amount of N or more gives zero.
+- Shifting by an `int_tracker<N>` builds a barrel shifter with one stage per
+  amount bit i where 2^i < N. Higher amount bits are ignored.
+- `if_then_else(condition, a, b)` selects between two bits or two
+  `int_tracker<N>`s.
+- `differs(a, b)` is the OR of the bitwise XOR; `int_tracker<N>::are_equal(a, b)`
+  is the AND of the bitwise XNOR.
+- `static_cast<bit_tracker>(x)` is true when any bit is set; `!x` when none is.
+- Converting between widths zero-extends or truncates, keeping the low bits.
+  Constructing from a `bit_tracker` puts it in bit 0.
+- `to_string()` prints one character per bit, most significant first: `0`/`1`
+  for constants, otherwise the gate character (`*` unknown, `!`, `&`, `|`, `^`).
 
-The benchmark constructs forward expressions without asserting a target. Nodes
-are counted once in the shared DAG; depth is the longest leaf-to-output path,
-with leaves at depth zero. This differs by one from `__max_depth()` for graphs
-rooted in unknown inputs, because the existing tracker gives those inputs depth
-one. The older `int_tracker_benchmark` retains that convention.
+## Measuring circuits
 
-64-bit results on 2026-09-17, before (`0c9bd86`) and after this change:
-
-| Expression | Gates before | Gates after | Depth before | Depth after |
-|---|---:|---:|---:|---:|
-| `x + y` | 314 | 470 | 126 | 22 |
-| `x - y` | 439 | 536 | 189 | 24 |
-| `x + 1` | 126 | 178 | 63 | 11 |
-| `x * y` | 25,896 | 12,312 | 374 | 46 |
-| `x * 13` | 603 | 756 | 124 | 24 |
-| `13 * x` | 9,757 | 756 | 367 | 24 |
-| `x / y` | 24,573 | 35,289 | 8,382 | 1,143 |
-| `x % y` | 25,080 | 36,066 | 8,384 | 1,167 |
-| `x / 8` | 10,047 | 0 | 4,080 | 0 |
-| `x % 8` | 10,412 | 0 | 4,085 | 0 |
-| `x / 10` | 11,038 | 1,629 | 4,456 | 548 |
-| `x % 10` | 11,412 | 1,585 | 4,457 | 552 |
-| `37 / x` | 24,386 | 2,914 | 8,260 | 95 |
-| `37 % x` | 24,893 | 3,685 | 8,262 | 119 |
-
-At 256 bits, multiplication drops from 423,048 gates / depth 1,526 to 197,367
-gates / depth 64. Division drops from depth 131,838 to 6,130, with gates
-increasing from 393,213 to 581,921. Remainder by ten drops from 168,756 gates
-to 6,577.
-
-Prefix addition deliberately trades more gates for shorter dependencies.
-Construction of generic addition and division can also take longer. Shallower
-circuits do not by themselves establish faster SAT search, smaller synthesized
-inverses, or improved hash reversal. The existing integration tests pass, but
-these measurements are circuit-shape measurements, not new reversal benchmarks.
-
-The complete 8-, 32-, 64-, and 256-bit measurements are in
-[`arithmetic-before.csv`](../experiments/arithmetic-before.csv) and
-[`arithmetic-after.csv`](../experiments/arithmetic-after.csv). Both were built
-with MinGW GCC 16.1.0, `-std=c++23 -O3`, on Windows. `build_ms` records one
-construction per expression and excludes graph measurement and final result
-destruction; it is informational, not a statistical timing comparison. Gate
-counts and depths are deterministic.
-
-Reproduce the current measurements with:
-
-```sh
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build build --target arithmetic_circuit_benchmark
-build/arithmetic_circuit_benchmark > arithmetic.csv
-```
-
-The same benchmark source compiled against `include/` from `0c9bd86` reproduces
-the baseline shape. Existing experiment reports describe their historical
-circuits and have not been rewritten with these new counts.
-
-## Validation and follow-up work
-
-`arithmetic_tests` checks the generated Boolean DAG independently of the solver:
-
-- All pairs of 1-, 3-, 5-, and 8-bit symbolic inputs, with both input carry
-  values, against native arithmetic. This covers overflow, subtraction carry,
-  multiplication, division, zero divisors, and aliased/repeated operands.
-- Every 8-bit constant on either side of division, for all 256 symbolic input
-  assignments.
-- 64-, 65-, and 129-bit sampled values and boundary cases against separate
-  Boolean schoolbook multiplication and restoring-division references. Cases
-  include divisors exceeding 64 bits and high-bit powers of two.
-- Compile-time concrete and symbolic construction, aliased remainder outputs,
-  and structural budgets for the intended depth and size improvements.
-
-The full CTest suite also covers CRC32, MD5, SHA-1, SHA-256, elliptic-curve
-arithmetic, reverse solving, saved inverses, and standalone C++ exports.
-
-The broader proposals remain separate experiments: Boolean hash-consing and
-associative canonicalization, reciprocal/magic-number division with a widened
-high-half product, and redundant-remainder/SRT division. None is required by
-the arithmetic paths introduced here.
+`circuit_metrics.h` provides `measure_circuit(bits)`. It counts each node of the
+shared DAG once and reports nodes, edges, inputs, constants, gates by type,
+depth (longest path, leaves at depth 0), width per depth, fan-out and output
+depths. `int_tracker::max_depth()` counts unknown leaves as depth 1 and
+constants as 0, so it can be one more than `measure_circuit`'s depth. The
+`arithmetic_circuit_benchmark` executable prints these shapes for the operators
+above at 8, 32, 64 and 256 bits.

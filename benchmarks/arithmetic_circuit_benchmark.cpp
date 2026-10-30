@@ -1,9 +1,9 @@
-#include <chrono>
 #include <iomanip>
 #include <iostream>
 #include <string_view>
 
 #include "circuit_metrics.h"
+#include "timing.h"
 
 namespace br = dixelu::bitreverse;
 
@@ -12,10 +12,9 @@ void measure(std::string_view operation, Function function)
 {
 	const br::int_tracker<N> x = br::unknown;
 	const br::int_tracker<N> y = br::unknown;
-	const auto started = std::chrono::steady_clock::now();
+	const auto started = support::clock::now();
 	const auto result = function(x, y);
-	const double milliseconds = std::chrono::duration<double, std::milli>(
-		std::chrono::steady_clock::now() - started).count();
+	const double milliseconds = support::milliseconds_since(started);
 	const auto shape = br::measure_circuit(result);
 	std::cout << N << ',' << operation << ',' << shape.nodes << ','
 		<< shape.gates << ',' << shape.max_depth << ',' << shape.max_width

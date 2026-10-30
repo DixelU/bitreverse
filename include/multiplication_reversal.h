@@ -3,8 +3,6 @@
 #include <cstddef>
 #include <string>
 
-#include <atomic>
-
 #include "bitreverse.h"
 
 using namespace dixelu::bitreverse;
@@ -13,7 +11,7 @@ using namespace dixelu::bitreverse;
 template<std::size_t Bits>
 using uint_arbitrary_t = dixelu::bitreverse::int_tracker<Bits>;
 
-// Helper to create uint_arbitrary_t from hex string
+// Most significant digit first. Any non-hex character counts as a zero digit.
 template<std::size_t Bits>
 uint_arbitrary_t<Bits> from_hex(const std::string& hex)
 {
@@ -55,27 +53,16 @@ template<std::size_t Bits>
 struct Secp256k1
 {
 	static_assert(Bits >= 256, "secp256k1 parameters require at least 256 bits");
-	// Finite field prime p = 2^256 - 2^32 - 977
-	static const uint_arbitrary_t<Bits> p;
-	// Curve order n
-	static const uint_arbitrary_t<Bits> n;
-	// Base Generator Point G
-	static const ECPoint<Bits> G;
-};
 
-template<std::size_t Bits>
-const uint_arbitrary_t<Bits> Secp256k1<Bits>::p =
-	from_hex<Bits>("fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f");
+	// p = 2^256 - 2^32 - 977
+	static inline const uint_arbitrary_t<Bits> p =
+		from_hex<Bits>("fffffffffffffffffffffffffffffffffffffffffffffffffffffffefffffc2f");
 
-template<std::size_t Bits>
-const uint_arbitrary_t<Bits> Secp256k1<Bits>::n =
-	from_hex<Bits>("fffffffffffffffffffffffffffffffebaaedce6af48a03bbfd25e8cd0364141");
-
-template<std::size_t Bits>
-const ECPoint<Bits> Secp256k1<Bits>::G = {
-	.x = from_hex<Bits>("79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"),
-	.y = from_hex<Bits>("483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8"),
-	.is_infinity = false
+	static inline const ECPoint<Bits> G{
+		.x = from_hex<Bits>("79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"),
+		.y = from_hex<Bits>("483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8"),
+		.is_infinity = false
+	};
 };
 
 // Widen BEFORE multiplication; widening its result cannot recover lost bits.
@@ -104,7 +91,7 @@ uint_arbitrary_t<Bits> mod_add(
 	bit_tracker no_underflow;
 	reduced.self_sub_ret_carry(extended{m}, no_underflow);
 
-	return uint_arbitrary_t<Bits>{extended::__execute_ternary_assign(no_underflow, reduced, sum)};
+	return uint_arbitrary_t<Bits>{if_then_else(no_underflow, reduced, sum)};
 }
 
 template<std::size_t Bits>
@@ -116,13 +103,7 @@ uint_arbitrary_t<Bits> mod_subtract(
 	difference.self_sub_ret_carry(b, no_underflow);
 
 	// On underflow, adding m modulo 2^Bits cancels the earlier wraparound.
-	return uint_arbitrary_t<Bits>::__execute_ternary_assign(no_underflow, difference, difference + m);
-}
-
-inline bool is_known_bit(const bit_tracker& bit, const bool value)
-{
-	return bit.bit_state->operation == '=' &&
-		static_cast<bool>(bit.bit_state->state) == value;
+	return if_then_else(no_underflow, difference, difference + m);
 }
 
 template<std::size_t Bits>
@@ -130,47 +111,45 @@ ECPoint<Bits> select_point(
 	const bit_tracker& condition, const ECPoint<Bits>& t, const ECPoint<Bits>& f)
 {
 	return ECPoint<Bits>{
-		.x = uint_arbitrary_t<Bits>::__execute_ternary_assign(condition, t.x, f.x),
-		.y = uint_arbitrary_t<Bits>::__execute_ternary_assign(condition, t.y, f.y),
-		.is_infinity = execute_ternary_operation(condition, t.is_infinity, f.is_infinity)
+		.x = if_then_else(condition, t.x, f.x),
+		.y = if_then_else(condition, t.y, f.y),
+		.is_infinity = if_then_else(condition, t.is_infinity, f.is_infinity)
 	};
 }
 
-// Fermat inversion requires prime m > 2 and a nonzero residue. At zero this
-// circuit returns zero; point operations discard it for exceptional cases.
+// Fermat inversion, a^(m-2) mod m, requires prime m > 2 and a nonzero residue.
+// At zero this circuit returns zero; point operations discard it for
+// exceptional cases.
 template<std::size_t Bits>
 uint_arbitrary_t<Bits> mod_inverse(const uint_arbitrary_t<Bits>& a, const uint_arbitrary_t<Bits>& m)
 {
-	// Fermat's Little Theorem: a^(m-2) mod m
 	uint_arbitrary_t<Bits> res(1);
 	uint_arbitrary_t<Bits> base = a % m;
 	uint_arbitrary_t<Bits> exp = m - uint_arbitrary_t<Bits>(2);
 
-	for (std::atomic<size_t> i = 0; i < Bits; ++i)
+	for (size_t i = 0; i < Bits; ++i)
 	{
 		res = mod_multiply(res, res, m);
 
 		// Square-then-multiply consumes the exponent MSB first; bits[0]
 		// is the MSB. Skip unused products when the exponent bit is known.
-		if (is_known_bit(exp.bits[i], false))
+		if (exp.bits[i].is_constant(false))
 			continue;
 
 		auto multiplied = mod_multiply(res, base, m);
-		res = uint_arbitrary_t<Bits>::__execute_ternary_assign(exp.bits[i], multiplied, res);
+		res = if_then_else(exp.bits[i], multiplied, res);
 	}
 
 	return res;
 }
 
-// --- Core Point Arithmetic Functions ---
-
 template<std::size_t Bits>
 ECPoint<Bits> ec_double(const ECPoint<Bits>& P)
 {
-	bit_tracker is_zero_y = uint_arbitrary_t<Bits>::are_equal(P.y, uint_arbitrary_t<Bits>(0));
-	bit_tracker res_is_inf = P.is_infinity | is_zero_y;
+	const bit_tracker is_zero_y = uint_arbitrary_t<Bits>::are_equal(P.y, uint_arbitrary_t<Bits>(0));
+	const bit_tracker res_is_inf = P.is_infinity | is_zero_y;
 
-	if (is_known_bit(res_is_inf, true))
+	if (res_is_inf.is_constant(true))
 		return ECPoint<Bits>{.is_infinity = true};
 
 	const auto& p = Secp256k1<Bits>::p;
@@ -192,19 +171,19 @@ ECPoint<Bits> ec_double(const ECPoint<Bits>& P)
 template<std::size_t Bits>
 ECPoint<Bits> ec_add(const ECPoint<Bits>& P, const ECPoint<Bits>& Q)
 {
-	if (is_known_bit(P.is_infinity, true))
+	if (P.is_infinity.is_constant(true))
 		return Q;
 
-	if (is_known_bit(Q.is_infinity, true))
+	if (Q.is_infinity.is_constant(true))
 		return P;
 
-	bit_tracker x_equal = uint_arbitrary_t<Bits>::are_equal(P.x, Q.x);
-	bit_tracker y_equal = uint_arbitrary_t<Bits>::are_equal(P.y, Q.y);
+	const bit_tracker x_equal = uint_arbitrary_t<Bits>::are_equal(P.x, Q.x);
+	const bit_tracker y_equal = uint_arbitrary_t<Bits>::are_equal(P.y, Q.y);
 
 	const auto& p = Secp256k1<Bits>::p;
 
 	ECPoint<Bits> result{.is_infinity = true};
-	if (!is_known_bit(x_equal, true))
+	if (!x_equal.is_constant(true))
 	{
 		// lambda = (y2 - y1) * inverse(x2 - x1) mod p
 		const auto num = mod_subtract(Q.y, P.y, p);
@@ -215,10 +194,10 @@ ECPoint<Bits> ec_add(const ECPoint<Bits>& P, const ECPoint<Bits>& Q)
 		result = ECPoint<Bits>{.x = x3, .y = y3, .is_infinity = false};
 	}
 
-	if (!is_known_bit(x_equal, false))
+	if (!x_equal.is_constant(false))
 	{
 		ECPoint<Bits> double_res{.is_infinity = true};
-		if (!is_known_bit(y_equal, false))
+		if (!y_equal.is_constant(false))
 			double_res = ec_double(P);
 		const auto same_x = select_point(y_equal, double_res, ECPoint<Bits>{.is_infinity = true});
 		result = select_point(x_equal, same_x, result);
@@ -227,29 +206,26 @@ ECPoint<Bits> ec_add(const ECPoint<Bits>& P, const ECPoint<Bits>& Q)
 	return select_point(P.is_infinity, Q, select_point(Q.is_infinity, P, result));
 }
 
-// Double-and-Add Scalar Multiplication (Unrolled for symbolic scalars)
+// Double-and-add from the least significant scalar bit: `base` is doubled
+// after each bit, so it holds base * 2^k when bit k is consumed.
 template<std::size_t Bits>
 ECPoint<Bits> ec_multiply(const uint_arbitrary_t<Bits>& scalar, ECPoint<Bits> base)
 {
 	ECPoint<Bits> result{.is_infinity = true};
-	ECPoint<Bits> current_base = base;
 
+	// bits[0] is the MSB; known leading zeros need no doublings.
 	size_t first_bit = 0;
-	while (first_bit < Bits && is_known_bit(scalar.bits[first_bit], false))
+	while (first_bit < Bits && scalar.bits[first_bit].is_constant(false))
 		++first_bit;
 
-	for (std::atomic<size_t> i = Bits; i-- > first_bit;)
+	for (size_t i = Bits; i-- > first_bit;)
 	{
-		// LSB first here: current_base carries the increasing power of two.
-		//
-		// ReSharper disable once CppTooWideScopeInitStatement
 		const auto& bit = scalar.bits[i];
-		if (!is_known_bit(bit, false))
-			result = select_point(bit, ec_add(result, current_base), result);
+		if (!bit.is_constant(false))
+			result = select_point(bit, ec_add(result, base), result);
 
 		if (i > first_bit)
-			current_base = ec_double(current_base);
+			base = ec_double(base);
 	}
 	return result;
 }
-

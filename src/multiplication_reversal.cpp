@@ -14,7 +14,7 @@ bool verify_private_key(const uint_arbitrary_t<Bits>& private_key, const ECPoint
 	bit_tracker match = (computed_public_key == target_public_key);
 	bit_tracker expected = true;
 	dixelu::bitreverse::assert_equality(match, expected,
-		[&](const dixelu::bitreverse::collision_resolution::crs_state& solution)
+		[&](const dixelu::bitreverse::collision_resolution::solution& solution)
 		{
 			++counter;
 

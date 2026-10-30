@@ -1,45 +1,29 @@
 #include "bitreverse.h"
+#include "circuit_metrics.h"
+#include "text.h"
+#include "timing.h"
+
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cmath>
 #include <iomanip>
 #include <iostream>
+#include <numeric>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace br = dixelu::bitreverse;
 using integer = br::int_tracker<256>;
 using value = std::array<bool, 256>; // Least significant bit first.
-using clock_type = std::chrono::steady_clock;
-using pointer = dixelu::counted_ptr<br::details::bitstate>;
-using circuit = br::collision_resolution::solver_core::compiled_circuit;
 
-value parse(const std::string& hex)
+value parse(std::string_view hex)
 {
 	if (hex.empty() || hex.size() > 64) throw std::invalid_argument("expected 1..64 hex digits");
+	const auto bits = support::parse_hex_number(hex);
 	value result{};
-	for (size_t digit = 0; digit < hex.size(); ++digit)
-	{
-		const char ch = hex[hex.size() - digit - 1];
-		const unsigned v = ch >= '0' && ch <= '9' ? ch - '0' :
-			ch >= 'a' && ch <= 'f' ? ch - 'a' + 10 : 16;
-		if (v == 16) throw std::invalid_argument("expected lowercase hex digits");
-		for (size_t bit = 0; bit < 4; ++bit) result[digit * 4 + bit] = (v >> bit) & 1;
-	}
-	return result;
-}
-
-std::string hex(const value& bits)
-{
-	std::string result(64, '0');
-	for (size_t digit = 0; digit < 64; ++digit)
-	{
-		unsigned v = 0;
-		for (size_t bit = 0; bit < 4; ++bit) v |= unsigned(bits[digit * 4 + bit]) << bit;
-		result[63 - digit] = "0123456789abcdef"[v];
-	}
+	std::copy(bits.begin(), bits.end(), result.begin());
 	return result;
 }
 
@@ -67,68 +51,28 @@ value native_product(const value& lhs, const value& rhs)
 	return result;
 }
 
-struct shape
-{
-	size_t nodes{}, gates{}, variables{}, depth{}, width{}, gate_width{};
-	// Log10 of the node occurrences if sharing were discarded, not stored nodes.
-	long double unfolded_log10{};
-};
-
 long double log_add(long double a, long double b)
 {
 	if (a < b) std::swap(a, b);
 	return a + std::log10(1.0L + std::pow(10.0L, b - a));
 }
 
-shape measure(const std::vector<pointer>& roots)
+// log10 of the node count of the expression tree obtained by expanding all
+// sharing in the DAG below `root`.
+long double unfolded_log10(const br::bit_tracker& root)
 {
-	circuit graph(roots);
-	std::vector<size_t> depths(graph.nodes.size()), levels, gate_levels;
+	const br::collision_resolution::solver_core::compiled_circuit graph(root.bit_state);
+	// Every operand has a smaller max_depth than its gate, so this order
+	// visits operands first.
+	std::vector<size_t> order(graph.nodes.size());
+	std::iota(order.begin(), order.end(), size_t{0});
+	std::ranges::sort(order, {}, [&](size_t id) -> size_t { return graph.nodes[id]->max_depth; });
+	// log10 of each node's tree size; zero is a single node.
 	std::vector<long double> occurrences(graph.nodes.size());
-	std::vector<unsigned char> ready(graph.nodes.size());
-	for (const size_t root : graph.root_ids)
-	{
-		std::vector<std::pair<size_t, bool>> pending{{root, false}};
-		while (!pending.empty())
-		{
-			const auto [id, expanded] = pending.back(); pending.pop_back();
-			if (ready[id] == 2) continue;
-			const unsigned arity = br::details::operation_args_count[graph.nodes[id]->operation];
-			if (!expanded)
-			{
-				if (ready[id]) throw std::logic_error("cyclic graph");
-				ready[id] = 1; pending.emplace_back(id, true);
-				for (unsigned i = arity; i > 0; --i) pending.emplace_back(graph.inputs[id][i - 1], false);
-				continue;
-			}
-			for (unsigned i = 0; i < arity; ++i)
-			{
-				const size_t child = graph.inputs[id][i];
-				depths[id] = std::max(depths[id], depths[child] + 1);
-				occurrences[id] = log_add(occurrences[id], occurrences[child]);
-			}
-			if (levels.size() <= depths[id]) { levels.resize(depths[id] + 1); gate_levels.resize(levels.size()); }
-			++levels[depths[id]];
-			if (arity) ++gate_levels[depths[id]];
-			ready[id] = 2;
-		}
-	}
-	shape result;
-	result.nodes = graph.nodes.size(); result.variables = graph.variables.size();
-	for (size_t i = 0; i < levels.size(); ++i)
-	{
-		result.width = std::max(result.width, levels[i]);
-		result.gate_width = std::max(result.gate_width, gate_levels[i]);
-		result.gates += gate_levels[i];
-	}
-	result.depth = levels.empty() ? 0 : levels.size() - 1;
-	bool first = true;
-	for (size_t root : graph.root_ids)
-	{
-		result.unfolded_log10 = first ? occurrences[root] : log_add(result.unfolded_log10, occurrences[root]);
-		first = false;
-	}
-	return result;
+	for (const size_t id : order)
+		for (unsigned i = 0; i < br::details::operation_args_count[graph.operations[id]]; ++i)
+			occurrences[id] = log_add(occurrences[id], occurrences[graph.inputs[id][i]]);
+	return occurrences[graph.root_id];
 }
 
 struct timing
@@ -147,15 +91,13 @@ void run(const std::string& label, const value& multiplier, const value& witness
 	auto target_bits = native_product(multiplier, witness);
 	if (impossible) target_bits[0] = !target_bits[0];
 	const auto target = tracked(target_bits);
-	const auto started = clock_type::now();
+	const auto started = support::clock::now();
 	const auto product = known_left ? known * unknown : unknown * known;
-	const double build_ms = std::chrono::duration<double, std::milli>(clock_type::now() - started).count();
-	std::vector<pointer> roots;
-	for (const auto& bit : product.bits) roots.push_back(bit.bit_state);
-	const auto forward = measure(roots);
-	br::bit_tracker mismatch(false);
-	for (size_t i = 0; i < 256; ++i) mismatch |= product.bits[i] ^ target.bits[i];
-	const auto equality = measure({mismatch.bit_state});
+	const double build_ms = support::milliseconds_since(started);
+	const auto forward = br::measure_circuit(product);
+	const auto mismatch = br::differs(product, target);
+	const auto equality = br::measure_circuit(std::vector{mismatch});
+	const auto equality_unfolded_log10 = unfolded_log10(mismatch);
 	std::vector<timing> runs;
 	for (size_t repetition = 0; repetition < repetitions; ++repetition)
 	{
@@ -163,7 +105,7 @@ void run(const std::string& label, const value& multiplier, const value& witness
 		br::solver_options options;
 		options.affine_reasoning = affine;
 		options.max_search_steps = 20000000;
-		const auto begin = clock_type::now();
+		const auto begin = support::clock::now();
 		br::collision_resolution::solutions_t solutions;
 		try
 		{
@@ -172,13 +114,9 @@ void run(const std::string& label, const value& multiplier, const value& witness
 			current.status = "complete";
 		}
 		catch (const br::solver_limit&) { current.status = "step_limit"; }
-		catch (const std::runtime_error& error)
-		{
-			if (std::string(error.what()) != "Unsatisfiable constraints") throw;
-			current.status = "unsat";
-		}
-		current.wall_ms = std::chrono::duration<double, std::milli>(clock_type::now() - begin).count();
-		current.search_ms = std::chrono::duration<double, std::milli>(current.statistics.elapsed).count();
+		catch (const br::unsatisfiable&) { current.status = "unsat"; }
+		current.wall_ms = support::milliseconds_since(begin);
+		current.search_ms = support::milliseconds(current.statistics.elapsed);
 		for (const auto& solution : solutions)
 		{
 			value recovered{};
@@ -202,11 +140,11 @@ void run(const std::string& label, const value& multiplier, const value& witness
 	while (trailing < 256 && !multiplier[trailing]) ++trailing;
 	for (bool bit : multiplier) weight += bit;
 	std::cout << label << ',' << (known_left ? "known_x_unknown" : "unknown_x_known") << ','
-		<< affine << ',' << impossible << ',' << hex(multiplier) << ',' << hex(target_bits) << ','
-		<< weight << ',' << trailing << ',' << forward.nodes << ',' << forward.gates << ',' << forward.depth
-		<< ',' << forward.width << ',' << forward.gate_width << ',' << equality.nodes << ',' << equality.depth
-		<< ',' << equality.width << ',' << equality.gate_width << ',' << equality.unfolded_log10 << ','
-		<< build_ms << ',' << mid.wall_ms << ',' << mid.search_ms << ',' << runs.front().wall_ms << ','
+		<< affine << ',' << impossible << ',' << support::to_hex_number(multiplier) << ','
+		<< support::to_hex_number(target_bits) << ',' << weight << ',' << trailing << ',' << forward.nodes << ','
+		<< forward.gates << ',' << forward.max_depth << ',' << forward.max_width << ',' << forward.max_gate_width << ','
+		<< equality.nodes << ',' << equality.max_depth << ',' << equality.max_width << ',' << equality.max_gate_width << ','
+		<< equality_unfolded_log10 << ',' << build_ms << ',' << mid.wall_ms << ',' << mid.search_ms << ',' << runs.front().wall_ms << ','
 		<< runs.back().wall_ms << ',' << mid.status << ',' << stats.variables << ',' << mid.assigned << ','
 		<< stats.solutions << ',' << stats.decisions << ',' << stats.conflicts << ',' << stats.propagations
 		<< ',' << stats.affine_enabled << ',' << stats.affine_passes << ',' << stats.search_steps << '\n';
@@ -218,10 +156,8 @@ int main(int argc, char** argv)
 	try
 	{
 		const value witness = parse("0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
-		std::cout << "# GCC release benchmark:256-bit product modulo2^256; native shift/add reference verifies every returned model.\n"
-			<< "# Depth is longest leaf-to-root edge count; width is max node count at equal leaf-based depth (DAG, not unfolded tree).\n"
-			<< "# Median of5 ALL-model assert_equality calls;20m search-step budget per call. Graph/build timings excluded from assertion.\n"
-			<< "# Missing unknown bits in raw assertion models are don't-cares, NOT enumerated complete256-bit candidates.\n"
+		std::cout << "# 256-bit product modulo 2^256 with one known factor: median of 5 all-model assert_equality calls of at most\n"
+			<< "# 20M search steps; each model is checked by native multiplication, and unassigned bits are don't-cares.\n"
 			<< "case,order,affine_requested,impossible,k_hex,target_hex,popcount,trailing_zeroes,product_nodes,product_gates,product_depth,product_width,product_gate_width,equality_nodes,equality_depth,equality_width,equality_gate_width,unfolded_equality_nodes_log10,build_ms,assert_median_ms,search_median_run_ms,assert_min_ms,assert_max_ms,status,solver_variables,assigned_bits,models,decisions,conflicts,propagations,affine_active,affine_passes,search_steps\n"
 			<< std::fixed << std::setprecision(6);
 		const std::vector<std::pair<std::string, std::string>> cases{

@@ -1,17 +1,23 @@
-#include <charconv>
-#include <chrono>
+#include <algorithm>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <iostream>
+#include <set>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 #include "crc32.h"
 #include "inverse.h"
 #include "md5.h"
+#include "text.h"
+#include "timing.h"
 
 #if defined(__MINGW32__)
 // Preserve ?? byte patterns when the Windows runtime parses command arguments.
@@ -24,117 +30,79 @@ namespace inv = br::inversion;
 namespace
 {
 
-void usage(std::ostream& out)
+using arguments = std::span<char* const>;
+
+// A --name flag or a --name=VALUE option of one command.
+struct option
 {
-	out << "Usage:\n"
-		<< "  inverse_demo build crc32|md5 HEX_PATTERN FILE [--printable] [--synthesize]\n"
-		<< "                     [--max-nodes=N] [--max-operations=N]\n"
-		<< "  inverse_demo synthesize INPUT.bri OUTPUT.bri [--max-nodes=N]\n"
-		<< "                          [--max-operations=N]\n"
-		<< "  inverse_demo synthesize-selector INPUT.bri OUTPUT.bri [--max-assignments=N]\n"
-		<< "                                   [--max-nodes=N] [--max-operations=N] [--max-bytes=N]\n"
-		<< "  inverse_demo synthesize-cegis INPUT.bri OUTPUT.bri [--degree=1|2]\n"
-		<< "                                [--max-features=N] [--max-counterexamples=N]\n"
-		<< "                                [--max-solver-steps=N] [--max-nodes=N]\n"
-		<< "  inverse_demo export-cpp INPUT.bri OUTPUT.h\n"
-		<< "  inverse_demo inspect FILE\n"
-		<< "  inverse_demo solve FILE TARGET_HEX [--limit=N|--all] [--output=FILE]\n"
-		<< "                     [--no-affine] [--conflict-learning]\n\n"
-		<< "HEX_PATTERN contains hex digits and ? wildcards (one unknown nibble each).\n"
-		<< "Quote patterns in your shell. The message length and known bytes are baked in.\n"
-		<< "--printable requires every input byte to be ASCII 0x20..0x7e.\n"
-		<< "Synthesis compiles an exact inverse function; resource limits must be positive.\n"
-		<< "synthesize-selector enumerates a bounded domain and uses one forward check per query.\n"
-		<< "synthesize-cegis learns a polynomial selector and requires a completed UNSAT proof.\n"
-		<< "CEGIS files provide one witness per target; --all and --limit other than 1 are unsupported.\n"
-		<< "export-cpp writes a standalone inverse from a compiled inverse file.\n"
-		<< "TARGET_HEX is the ordinary CRC32 or MD5 hex digest, without a 0x prefix.\n"
-		<< "Solutions are complete input messages as hex, one per line on stdout.\n"
-		<< "The default limit is 1; --all or --limit=0 enumerates all matches.\n"
-		<< "--output also writes and flushes each solution to a file.\n"
-		<< "--conflict-learning disables affine propagation for the search solver.\n"
-		<< "Exit codes: 0 success, 1 invalid arguments/file/error, 2 no matching input.\n";
+	std::string_view name;
+	std::variant<bool*, size_t*, std::string*> target;
+};
+
+// Stores each argument in its option's target; a repeated option keeps the
+// last value. Returns the option names given, with repeats.
+std::multiset<std::string_view> parse_options(std::string_view command, arguments given,
+	std::initializer_list<option> table)
+{
+	std::multiset<std::string_view> names;
+	for (const std::string_view argument : given)
+	{
+		const auto separator = argument.find('=');
+		const auto name = argument.substr(0, separator);
+		const auto match = std::ranges::find(table, name, &option::name);
+		const bool has_value = separator != std::string_view::npos;
+		if (match == table.end() || has_value == std::holds_alternative<bool*>(match->target))
+			throw std::invalid_argument("unknown " + std::string(command) + " option: " + std::string(argument));
+		const auto value = has_value ? argument.substr(separator + 1) : std::string_view{};
+		if (const auto flag = std::get_if<bool*>(&match->target))
+			**flag = true;
+		else if (const auto number = std::get_if<size_t*>(&match->target))
+			**number = support::parse_size(value, name);
+		else if (value.empty())
+			throw std::invalid_argument(std::string(name) + " requires one nonempty file path");
+		else
+			*std::get<std::string*>(match->target) = value;
+		names.insert(match->name);
+	}
+	return names;
 }
 
-unsigned hex_digit(char value)
-{
-	if (value >= '0' && value <= '9')
-		return static_cast<unsigned>(value - '0');
-	if (value >= 'a' && value <= 'f')
-		return static_cast<unsigned>(value - 'a' + 10);
-	if (value >= 'A' && value <= 'F')
-		return static_cast<unsigned>(value - 'A' + 10);
-	throw std::invalid_argument("invalid hex digit; expected 0..9, a..f, or A..F");
-}
-
+// Each '?' is one unknown nibble; the message length and known nibbles are baked in.
 std::vector<br::itu8> parse_pattern(std::string_view pattern)
 {
 	if (pattern.size() % 2 != 0)
 		throw std::invalid_argument("HEX_PATTERN must contain complete byte pairs");
-	std::vector<br::itu8> message;
-	message.reserve(pattern.size() / 2);
-	for (size_t offset = 0; offset < pattern.size(); offset += 2)
+	std::vector<br::itu8> message(pattern.size() / 2);
+	for (size_t digit = 0; digit < pattern.size(); ++digit)
 	{
-		if (pattern.substr(offset, 2) == "??")
-			message.emplace_back(br::unknown);
-		else if (pattern[offset] == '?' || pattern[offset + 1] == '?')
-		{
-			br::itu8 byte{0};
-			for (size_t nibble = 0; nibble < 2; ++nibble)
-			{
-				const char digit = pattern[offset + nibble];
-				if (digit == '?')
-					for (size_t bit = 0; bit < 4; ++bit) byte.bits[nibble * 4 + bit] = br::unknown;
-				else
-				{
-					const auto value = hex_digit(digit);
-					for (size_t bit = 0; bit < 4; ++bit)
-						byte.bits[nibble * 4 + bit] = br::bit_tracker(((value >> (3 - bit)) & 1U) != 0);
-				}
-			}
-			message.push_back(std::move(byte));
-		}
-		else
-			message.emplace_back(
-				hex_digit(pattern[offset]) * 16 + hex_digit(pattern[offset + 1]));
+		const bool unknown = pattern[digit] == '?';
+		const unsigned nibble = unknown ? 0 : support::hex_digit(pattern[digit]);
+		// itu8 bits are most significant first, like the hex digits.
+		auto* bits = &message[digit / 2].bits[(digit % 2) * 4];
+		for (size_t bit = 0; bit < 4; ++bit)
+			bits[bit] = unknown ? br::bit_tracker(br::unknown) : br::bit_tracker(((nibble >> (3 - bit)) & 1U) != 0);
 	}
 	return message;
 }
 
+// bits_of(integer) is least significant bit first; the displayed digest is
+// most significant digit first.
 inv::values parse_target(std::string_view hex, size_t bit_count)
 {
 	if (bit_count % 4 != 0 || hex.size() != bit_count / 4)
 		throw std::invalid_argument(
 			"TARGET_HEX must contain exactly " + std::to_string(bit_count / 4) +
 			" hex digits for this inverse");
-	inv::values result;
-	result.reserve(bit_count);
-	// bits_of(integer) is LSB first; the displayed digest is most significant first.
-	for (auto digit = hex.rbegin(); digit != hex.rend(); ++digit)
-	{
-		const unsigned nibble = hex_digit(*digit);
-		for (unsigned bit = 0; bit < 4; ++bit)
-			result.push_back(((nibble >> bit) & 1) != 0);
-	}
-	return result;
+	return support::parse_hex_number(hex);
 }
 
-std::string message_hex(const inv::values& value)
+// Message bytes in order, each least significant bit first.
+std::string message_hex(const inv::values& bits)
 {
-	if (value.size() % 8 != 0)
-		throw std::invalid_argument("this CLI requires whole-byte message inputs");
-	static constexpr char digits[] = "0123456789abcdef";
-	std::string result;
-	result.reserve(value.size() / 4);
-	for (size_t offset = 0; offset < value.size(); offset += 8)
-	{
-		unsigned byte = 0;
-		for (size_t bit = 0; bit < 8; ++bit)
-			byte |= static_cast<unsigned>(value[offset + bit]) << bit;
-		result.push_back(digits[byte >> 4]);
-		result.push_back(digits[byte & 15]);
-	}
-	return result;
+	std::vector<std::uint8_t> bytes(bits.size() / 8);
+	for (size_t bit = 0; bit < bits.size(); ++bit)
+		bytes[bit / 8] |= static_cast<std::uint8_t>(bits[bit] << (bit % 8));
+	return support::to_hex(bytes);
 }
 
 void describe(const inv::program& program, std::ostream& out)
@@ -168,49 +136,9 @@ void describe(const inv::program& program, std::ostream& out)
 		out << "Inverse: saved Boolean relation; each target requires search\n";
 }
 
-inv::program read_program(const std::string& path)
-{
-	std::ifstream input(path, std::ios::binary);
-	if (!input)
-		throw std::runtime_error("cannot open inverse file: " + path);
-	return inv::program::load(input);
-}
-
-size_t parse_limit(std::string_view text, std::string_view name = "--limit")
-{
-	size_t result = 0;
-	const auto parsed = std::from_chars(text.data(), text.data() + text.size(), result);
-	if (text.empty() || parsed.ec != std::errc{} || parsed.ptr != text.data() + text.size())
-		throw std::invalid_argument(std::string(name) + " requires a nonnegative integer");
-	return result;
-}
-
-bool parse_synthesis_option(std::string_view option, inv::synthesis_options& options)
-{
-	std::string_view name;
-	size_t* value = nullptr;
-	if (option.starts_with("--max-nodes="))
-	{
-		name = "--max-nodes";
-		value = &options.max_nodes;
-	}
-	else if (option.starts_with("--max-operations="))
-	{
-		name = "--max-operations";
-		value = &options.max_operations;
-	}
-	else
-		return false;
-	*value = parse_limit(option.substr(name.size() + 1), name);
-	if (*value == 0)
-		throw std::invalid_argument(std::string(name) + " must be positive; synthesis is always bounded");
-	return true;
-}
-
 void describe_synthesis(std::ostream& stream, const inv::synthesis_statistics& statistics)
 {
-	stream << "Synthesis build: "
-		<< std::chrono::duration<double>(statistics.elapsed).count() << " seconds, "
+	stream << "Synthesis build: " << support::seconds(statistics.elapsed) << " seconds, "
 		<< statistics.created_nodes << " created nodes, "
 		<< statistics.operations << " operations\n";
 	for (size_t index = 0; index < statistics.phases.size(); ++index)
@@ -219,7 +147,7 @@ void describe_synthesis(std::ostream& stream, const inv::synthesis_statistics& s
 		if (!phase.started) continue;
 		stream << "  " << inv::synthesis_phase_name(static_cast<inv::synthesis_phase>(index))
 			<< (phase.completed ? ": completed, " : ": failed, ")
-			<< std::chrono::duration<double, std::milli>(phase.elapsed).count() << " ms, "
+			<< support::milliseconds(phase.elapsed) << " ms, "
 			<< phase.created_nodes << " created, " << phase.resident_nodes << " resident, ";
 		if (phase.completed) stream << phase.live_nodes;
 		else stream << "unavailable";
@@ -229,21 +157,38 @@ void describe_synthesis(std::ostream& stream, const inv::synthesis_statistics& s
 		<< " bytes (excludes source/returned circuits and allocator overhead)\n";
 }
 
-inv::program synthesize_program(const inv::program& program,
-	const inv::synthesis_options& options)
+void describe_selector(std::ostream& stream, const inv::selector_statistics& statistics)
 {
-	inv::synthesis_statistics statistics;
-	const auto result = [&]
-	{
-		try { return program.synthesized(options, &statistics); }
-		catch (const inv::synthesis_limit&)
-		{
-			describe_synthesis(std::cerr, statistics);
-			throw;
-		}
-	}();
-	describe_synthesis(std::cout, statistics);
-	return result;
+	stream << "Selector build: " << support::seconds(statistics.elapsed)
+		<< " seconds, " << statistics.domain_assignments << " domain assignments, "
+		<< statistics.allowed_assignments << " allowed, " << statistics.distinct_outputs
+		<< " distinct outputs, " << statistics.operations << " operations\n"
+		<< "  Forward enumeration: " << support::milliseconds(statistics.enumeration_elapsed)
+		<< " ms; tree construction: " << support::milliseconds(statistics.tree_elapsed)
+		<< " ms; exhaustive certification: " << support::milliseconds(statistics.validation_elapsed)
+		<< " ms\nPeak tracked selector allocation: " << statistics.peak_bytes << " bytes\n";
+	if (statistics.failed_phase != "none") stream << "Failed phase: " << statistics.failed_phase << '\n';
+}
+
+void describe_cegis(std::ostream& stream, const inv::cegis_statistics& statistics)
+{
+	stream << "CEGIS build: " << support::seconds(statistics.elapsed)
+		<< " seconds, " << statistics.features << " basis features, " << statistics.counterexamples
+		<< " counterexamples, " << statistics.solver_calls << " solver calls, "
+		<< statistics.solver_steps << " solver steps\n"
+		<< "  Candidate: " << statistics.candidate_terms << " terms, "
+		<< statistics.candidate_coefficients << " coefficient references; verification: "
+		<< support::seconds(statistics.verification_elapsed) << " seconds\n"
+		<< "  Certification: " << (statistics.certified ? "completed UNSAT miter" : "incomplete") << '\n';
+	if (statistics.failed_phase != "none") stream << "Failed phase: " << statistics.failed_phase << '\n';
+}
+
+inv::program read_program(const std::string& path)
+{
+	std::ifstream input(path, std::ios::binary);
+	if (!input)
+		throw std::runtime_error("cannot open inverse file: " + path);
+	return inv::program::load(input);
 }
 
 void require_different_files(const std::string& source, const std::string& destination)
@@ -253,249 +198,183 @@ void require_different_files(const std::string& source, const std::string& desti
 		throw std::invalid_argument("output file must differ from the input inverse file");
 }
 
-void save_program(const inv::program& program, const std::string& path)
+// Opened only once the content is complete, so a failure before this point
+// leaves an existing file untouched.
+void write_file(const std::string& path, const std::string& kind, const std::string& content)
 {
 	std::ofstream output(path, std::ios::binary | std::ios::trunc);
 	if (!output)
-		throw std::runtime_error("cannot create inverse file: " + path);
-	program.save(output);
+		throw std::runtime_error("cannot create " + kind + ": " + path);
+	output << content;
 	output.close();
 	if (!output)
-		throw std::runtime_error("failed to write inverse file: " + path);
+		throw std::runtime_error("failed to write " + kind + ": " + path);
 }
 
-int synthesize(int argc, char** argv)
+void save_program(const inv::program& program, const std::string& path)
 {
-	if (argc < 4)
-		throw std::invalid_argument("synthesize expects INPUT.bri OUTPUT.bri and optional resource limits");
-	inv::synthesis_options options;
-	for (int index = 4; index < argc; ++index)
-		if (!parse_synthesis_option(argv[index], options))
-			throw std::invalid_argument("unknown synthesis option: " + std::string(argv[index]));
-	const auto source = read_program(argv[2]);
-	require_different_files(argv[2], argv[3]);
-	const auto program = synthesize_program(source, options);
-	save_program(program, argv[3]);
-	std::cout << "Saved synthesized inverse: " << argv[3] << '\n';
-	describe(program, std::cout);
-	return 0;
+	std::ostringstream content;
+	program.save(content);
+	write_file(path, "inverse file", content.str());
 }
 
-void describe_selector(std::ostream& stream, const inv::selector_statistics& statistics)
+// Build statistics go to stdout, or to stderr when a resource limit stops the build.
+template<class Limit, class Options, class Statistics>
+inv::program build_backend(const inv::program& source, const Options& options,
+	inv::program (inv::program::*build)(const Options&, Statistics*) const,
+	void (&describe_statistics)(std::ostream&, const Statistics&))
 {
-	stream << "Selector build: " << std::chrono::duration<double>(statistics.elapsed).count()
-		<< " seconds, " << statistics.domain_assignments << " domain assignments, "
-		<< statistics.allowed_assignments << " allowed, " << statistics.distinct_outputs
-		<< " distinct outputs, " << statistics.operations << " operations\n"
-		<< "  Forward enumeration: " << std::chrono::duration<double, std::milli>(statistics.enumeration_elapsed).count()
-		<< " ms; tree construction: " << std::chrono::duration<double, std::milli>(statistics.tree_elapsed).count()
-		<< " ms; exhaustive certification: " << std::chrono::duration<double, std::milli>(statistics.validation_elapsed).count()
-		<< " ms\nPeak tracked selector allocation: " << statistics.peak_bytes << " bytes\n";
-	if (statistics.failed_phase != "none") stream << "Failed phase: " << statistics.failed_phase << '\n';
-}
-
-int synthesize_selector(int argc, char** argv)
-{
-	if (argc < 4)
-		throw std::invalid_argument("synthesize-selector expects INPUT.bri OUTPUT.bri and optional resource limits");
-	inv::selector_options options;
-	for (int index = 4; index < argc; ++index)
+	Statistics statistics;
+	try
 	{
-		const std::string_view argument(argv[index]);
-		const auto separator = argument.find('=');
-		const auto name = argument.substr(0, separator);
-		size_t* value = nullptr;
-		if (name == "--max-assignments") value = &options.max_assignments;
-		else if (name == "--max-nodes") value = &options.max_nodes;
-		else if (name == "--max-operations") value = &options.max_operations;
-		else if (name == "--max-bytes") value = &options.max_bytes;
-		if (!value || separator == std::string_view::npos)
-			throw std::invalid_argument("unknown selector option: " + std::string(argument));
-		*value = parse_limit(argument.substr(separator + 1), name);
-		if (!*value) throw std::invalid_argument(std::string(name) + " must be positive");
+		auto program = (source.*build)(options, &statistics);
+		describe_statistics(std::cout, statistics);
+		return program;
 	}
-	const auto source = read_program(argv[2]);
-	require_different_files(argv[2], argv[3]);
-	inv::selector_statistics statistics;
-	const auto program = [&]
+	catch (const Limit&)
 	{
-		try { return source.selected(options, &statistics); }
-		catch (const inv::selector_limit&)
-		{
-			describe_selector(std::cerr, statistics);
-			throw;
-		}
-	}();
-	describe_selector(std::cout, statistics);
-	save_program(program, argv[3]);
-	std::cout << "Saved compiled selector: " << argv[3] << '\n';
-	describe(program, std::cout);
-	return 0;
-}
-
-void describe_cegis(std::ostream& stream, const inv::cegis_statistics& statistics)
-{
-	stream << "CEGIS build: " << std::chrono::duration<double>(statistics.elapsed).count()
-		<< " seconds, " << statistics.features << " basis features, " << statistics.counterexamples
-		<< " counterexamples, " << statistics.solver_calls << " solver calls, "
-		<< statistics.solver_steps << " solver steps\n"
-		<< "  Candidate: " << statistics.candidate_terms << " terms, "
-		<< statistics.candidate_coefficients << " coefficient references; verification: "
-		<< std::chrono::duration<double>(statistics.verification_elapsed).count() << " seconds\n"
-		<< "  Certification: " << (statistics.certified ? "completed UNSAT miter" : "incomplete") << '\n';
-	if (statistics.failed_phase != "none") stream << "Failed phase: " << statistics.failed_phase << '\n';
-}
-
-int synthesize_cegis(int argc, char** argv)
-{
-	if (argc < 4) throw std::invalid_argument("synthesize-cegis expects INPUT.bri OUTPUT.bri");
-	inv::cegis_options options;
-	for (int index = 4; index < argc; ++index)
-	{
-		const std::string_view argument(argv[index]);
-		const auto separator = argument.find('=');
-		const auto name = argument.substr(0, separator);
-		size_t* value = nullptr;
-		if (name == "--degree") value = &options.max_degree;
-		else if (name == "--max-features") value = &options.max_features;
-		else if (name == "--max-counterexamples") value = &options.max_counterexamples;
-		else if (name == "--max-solver-steps") value = &options.max_solver_steps;
-		else if (name == "--max-nodes") value = &options.max_nodes;
-		if (!value || separator == std::string_view::npos)
-			throw std::invalid_argument("unknown CEGIS option: " + std::string(argument));
-		*value = parse_limit(argument.substr(separator + 1), name);
+		describe_statistics(std::cerr, statistics);
+		throw;
 	}
-	const auto source = read_program(argv[2]);
-	require_different_files(argv[2], argv[3]);
-	inv::cegis_statistics statistics;
-	const auto program = [&]
-	{
-		try { return source.learned(options, &statistics); }
-		catch (const inv::cegis_limit&) { describe_cegis(std::cerr, statistics); throw; }
-	}();
-	describe_cegis(std::cout, statistics);
-	save_program(program, argv[3]);
-	std::cout << "Saved certified learned inverse: " << argv[3] << '\n';
+}
+
+// The synthesize* commands: compile INPUT.bri into a new backend in OUTPUT.bri.
+template<class Limit, class Options, class Statistics>
+int compile_backend(arguments files, const Options& options, std::string_view saved,
+	inv::program (inv::program::*build)(const Options&, Statistics*) const,
+	void (&describe_statistics)(std::ostream&, const Statistics&))
+{
+	const auto source = read_program(files[0]);
+	require_different_files(files[0], files[1]);
+	const auto program = build_backend<Limit>(source, options, build, describe_statistics);
+	save_program(program, files[1]);
+	std::cout << "Saved " << saved << ": " << files[1] << '\n';
 	describe(program, std::cout);
 	return 0;
 }
 
-int export_cpp(int argc, char** argv)
+int build(arguments files, arguments flags)
 {
-	if (argc != 4)
-		throw std::invalid_argument("export-cpp expects INPUT.bri OUTPUT.h");
-	const auto program = read_program(argv[2]);
-	if (!program.is_synthesized() && !program.is_selected() && !program.is_learned())
-		throw std::invalid_argument("export-cpp requires a synthesized inverse or compiled selector");
-	require_different_files(argv[2], argv[3]);
-	std::ostringstream generated;
-	program.export_cpp(generated);
-	std::ofstream output(argv[3], std::ios::binary | std::ios::trunc);
-	if (!output)
-		throw std::runtime_error("cannot create C++ header: " + std::string(argv[3]));
-	output << generated.str();
-	output.close();
-	if (!output)
-		throw std::runtime_error("failed to write C++ header: " + std::string(argv[3]));
-	std::cout << "Exported standalone inverse: " << argv[3] << '\n';
-	return 0;
-}
-
-int build(int argc, char** argv)
-{
-	if (argc < 5)
-		throw std::invalid_argument("build expects HASH HEX_PATTERN FILE and optional build flags");
-	const std::string_view algorithm(argv[2]);
+	const std::string_view algorithm = files[0], pattern = files[1];
 	if (algorithm != "crc32" && algorithm != "md5")
 		throw std::invalid_argument("unknown hash; choose crc32 or md5");
-	bool printable = false;
-	bool do_synthesize = false;
-	bool have_synthesis_limits = false;
-	inv::synthesis_options synthesis_options;
-	for (int index = 5; index < argc; ++index)
-	{
-		const std::string_view option(argv[index]);
-		if (option == "--printable")
-			printable = true;
-		else if (option == "--synthesize")
-			do_synthesize = true;
-		else if (parse_synthesis_option(option, synthesis_options))
-			have_synthesis_limits = true;
-		else
-			throw std::invalid_argument("unknown build option: " + std::string(option));
-	}
-	if (have_synthesis_limits && !do_synthesize)
+	bool printable = false, run_synthesis = false;
+	inv::synthesis_options limits;
+	const auto given = parse_options("build", flags, {
+		{"--printable", &printable},
+		{"--synthesize", &run_synthesis},
+		{"--max-nodes", &limits.max_nodes},
+		{"--max-operations", &limits.max_operations}});
+	if (!run_synthesis && (given.contains("--max-nodes") || given.contains("--max-operations")))
 		throw std::invalid_argument("build resource limits require --synthesize");
-	const auto message = parse_pattern(argv[3]);
+	const auto message = parse_pattern(pattern);
 	inv::bits requirements;
+	// Printable is 0x20..0x7e: below 0x80, some bit of 0x60 set, and not 0x7f.
 	if (printable)
-	{
-		requirements.reserve(message.size());
 		for (const auto& byte : message)
 			requirements.push_back(
 				(!br::bit_tracker(byte & 0x80)) &
 				br::bit_tracker(byte & 0x60) &
 				br::bit_tracker(byte ^ 0x7f));
-	}
 	const auto outputs = algorithm == "crc32"
 		? inv::bits_of(br::hash::crc32(message))
 		: inv::bits_of(br::hash::md5(message));
 	auto program = inv::program::compile(inv::bits_of(message), outputs, requirements);
-	if (do_synthesize)
-		program = synthesize_program(program, synthesis_options);
-	save_program(program, argv[4]);
-	std::cout << "Saved " << algorithm << " inverse: " << argv[4] << '\n'
-		<< "Baked input pattern: " << argv[3] << '\n';
+	if (run_synthesis)
+		program = build_backend<inv::synthesis_limit>(
+			program, limits, &inv::program::synthesized, describe_synthesis);
+	save_program(program, files[2]);
+	std::cout << "Saved " << algorithm << " inverse: " << files[2] << '\n'
+		<< "Baked input pattern: " << pattern << '\n';
 	if (printable)
 		std::cout << "Baked input restriction: printable ASCII (20..7e)\n";
 	describe(program, std::cout);
 	return 0;
 }
 
-int solve(int argc, char** argv)
+int synthesize(arguments files, arguments flags)
 {
-	if (argc < 4)
-		throw std::invalid_argument("solve expects FILE TARGET_HEX and optional solve flags");
+	inv::synthesis_options options;
+	parse_options("synthesize", flags, {
+		{"--max-nodes", &options.max_nodes},
+		{"--max-operations", &options.max_operations}});
+	return compile_backend<inv::synthesis_limit>(files, options, "synthesized inverse",
+		&inv::program::synthesized, describe_synthesis);
+}
+
+int synthesize_selector(arguments files, arguments flags)
+{
+	inv::selector_options options;
+	parse_options("synthesize-selector", flags, {
+		{"--max-assignments", &options.max_assignments},
+		{"--max-nodes", &options.max_nodes},
+		{"--max-operations", &options.max_operations},
+		{"--max-bytes", &options.max_bytes}});
+	return compile_backend<inv::selector_limit>(files, options, "compiled selector",
+		&inv::program::selected, describe_selector);
+}
+
+int synthesize_cegis(arguments files, arguments flags)
+{
+	inv::cegis_options options;
+	parse_options("synthesize-cegis", flags, {
+		{"--degree", &options.max_degree},
+		{"--max-features", &options.max_features},
+		{"--max-counterexamples", &options.max_counterexamples},
+		{"--max-solver-steps", &options.max_solver_steps},
+		{"--max-nodes", &options.max_nodes}});
+	return compile_backend<inv::cegis_limit>(files, options, "certified learned inverse",
+		&inv::program::learned, describe_cegis);
+}
+
+int export_cpp(arguments files, arguments flags)
+{
+	parse_options("export-cpp", flags, {});
+	const auto program = read_program(files[0]);
+	require_different_files(files[0], files[1]);
+	std::ostringstream header;
+	program.export_cpp(header);
+	write_file(files[1], "C++ header", header.str());
+	std::cout << "Exported standalone inverse: " << files[1] << '\n';
+	return 0;
+}
+
+int inspect(arguments files, arguments flags)
+{
+	parse_options("inspect", flags, {});
+	describe(read_program(files[0]), std::cout);
+	return 0;
+}
+
+int solve(arguments files, arguments flags)
+{
+	bool all = false, no_affine = false, conflict_learning = false;
 	size_t limit = 1;
-	bool have_limit = false;
 	std::string output_path;
+	const auto given = parse_options("solve", flags, {
+		{"--all", &all},
+		{"--limit", &limit},
+		{"--output", &output_path},
+		{"--no-affine", &no_affine},
+		{"--conflict-learning", &conflict_learning}});
+	if (given.count("--all") + given.count("--limit") > 1)
+		throw std::invalid_argument("specify only one of --limit=N or --all");
+	if (given.count("--output") > 1)
+		throw std::invalid_argument("--output requires one nonempty file path");
+	if (all) limit = 0;
 	br::solver_options options;
-	for (int index = 4; index < argc; ++index)
-	{
-		const std::string_view option(argv[index]);
-		if (option == "--all" || option.starts_with("--limit="))
-		{
-			if (have_limit)
-				throw std::invalid_argument("specify only one of --limit=N or --all");
-			have_limit = true;
-			limit = option == "--all" ? 0 : parse_limit(option.substr(8));
-		}
-		else if (option.starts_with("--output="))
-		{
-			if (!output_path.empty() || option.size() == 9)
-				throw std::invalid_argument("--output requires one nonempty file path");
-			output_path = option.substr(9);
-		}
-		else if (option == "--no-affine")
-			options.affine_reasoning = false;
-		else if (option == "--conflict-learning")
-		{
-			options.affine_reasoning = false;
-			options.conflict_learning = true;
-		}
-		else
-			throw std::invalid_argument("unknown solve option: " + std::string(option));
-	}
-	const auto program = read_program(argv[2]);
+	// The conflict-learning engine runs without affine reasoning.
+	options.affine_reasoning = !no_affine && !conflict_learning;
+	options.conflict_learning = conflict_learning;
+
+	const auto program = read_program(files[0]);
 	if (program.input_count() % 8 != 0)
 		throw std::invalid_argument("this CLI requires whole-byte message inputs");
-	const auto target = parse_target(argv[3], program.output_count());
+	const auto target = parse_target(files[1], program.output_count());
 	std::ofstream output;
 	if (!output_path.empty())
 	{
-		if (std::filesystem::exists(output_path) &&
-			std::filesystem::equivalent(argv[2], output_path))
-			throw std::invalid_argument("solution output must differ from the inverse file");
+		require_different_files(files[0], output_path);
 		output.open(output_path, std::ios::trunc);
 		if (!output)
 			throw std::runtime_error("cannot create solution file: " + output_path);
@@ -524,40 +403,66 @@ int solve(int argc, char** argv)
 	return 0;
 }
 
+struct subcommand
+{
+	std::string_view name;
+	std::string_view positional; // one word per required argument
+	std::string_view options;
+	int (*run)(arguments positional, arguments options);
+};
+
+constexpr subcommand subcommands[] = {
+	{"build", "crc32|md5 HEX_PATTERN FILE",
+		"[--printable] [--synthesize [--max-nodes=N] [--max-operations=N]]", build},
+	{"synthesize", "INPUT.bri OUTPUT.bri", "[--max-nodes=N] [--max-operations=N]", synthesize},
+	{"synthesize-selector", "INPUT.bri OUTPUT.bri",
+		"[--max-assignments=N] [--max-nodes=N] [--max-operations=N] [--max-bytes=N]", synthesize_selector},
+	{"synthesize-cegis", "INPUT.bri OUTPUT.bri",
+		"[--degree=1|2] [--max-features=N] [--max-counterexamples=N] [--max-solver-steps=N] [--max-nodes=N]",
+		synthesize_cegis},
+	{"export-cpp", "INPUT.bri OUTPUT.h", "", export_cpp},
+	{"inspect", "FILE", "", inspect},
+	{"solve", "FILE TARGET_HEX", "[--limit=N|--all] [--output=FILE] [--no-affine] [--conflict-learning]", solve},
+};
+
+void usage(std::ostream& out)
+{
+	out << "Usage:\n";
+	for (const auto& command : subcommands)
+	{
+		out << "  inverse_demo " << command.name << ' ' << command.positional << '\n';
+		if (!command.options.empty())
+			out << "      " << command.options << '\n';
+	}
+	out << "\nHEX_PATTERN: hex digits, with ? for each unknown nibble (quote it in the shell).\n"
+		<< "--printable restricts every input byte to ASCII 0x20..0x7e.\n"
+		<< "TARGET_HEX: the CRC32 or MD5 digest as usually printed, without 0x.\n"
+		<< "solve prints matching inputs as hex, one per line: 1 by default, all with --all or --limit=0.\n"
+		<< "Exit codes: 0 success, 1 error, 2 no matching input. Details: docs/CLI.md.\n";
+}
+
 }
 
 int main(int argc, char** argv)
 {
 	try
 	{
-		if (argc == 2 && std::string_view(argv[1]) == "--help")
+		const auto given = arguments(argv, static_cast<size_t>(argc)).subspan(1);
+		if (given.size() == 1 && std::string_view(given[0]) == "--help")
 		{
 			usage(std::cout);
 			return 0;
 		}
-		if (argc < 2)
-			throw std::invalid_argument("expected build, synthesize, synthesize-selector, synthesize-cegis, export-cpp, inspect, or solve");
-		const std::string_view command(argv[1]);
-		if (command == "build")
-			return build(argc, argv);
-		if (command == "solve")
-			return solve(argc, argv);
-		if (command == "synthesize")
-			return synthesize(argc, argv);
-		if (command == "synthesize-selector")
-			return synthesize_selector(argc, argv);
-		if (command == "synthesize-cegis")
-			return synthesize_cegis(argc, argv);
-		if (command == "export-cpp")
-			return export_cpp(argc, argv);
-		if (command == "inspect")
-		{
-			if (argc != 3)
-				throw std::invalid_argument("inspect expects FILE");
-			describe(read_program(argv[2]), std::cout);
-			return 0;
-		}
-		throw std::invalid_argument("unknown command: " + std::string(command));
+		if (given.empty())
+			throw std::invalid_argument("expected a command");
+		const auto command = std::ranges::find(subcommands, std::string_view(given[0]), &subcommand::name);
+		if (command == std::ranges::end(subcommands))
+			throw std::invalid_argument("unknown command: " + std::string(given[0]));
+		const auto positional = static_cast<size_t>(std::ranges::count(command->positional, ' ')) + 1;
+		if (given.size() - 1 < positional)
+			throw std::invalid_argument(
+				std::string(command->name) + " expects " + std::string(command->positional));
+		return command->run(given.subspan(1, positional), given.subspan(1 + positional));
 	}
 	catch (const std::exception& error)
 	{

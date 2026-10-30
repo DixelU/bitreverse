@@ -1,8 +1,18 @@
 #ifndef DIXELU_BITREVERSE_SOLVER_STATE_H
 #define DIXELU_BITREVERSE_SOLVER_STATE_H
 
-// Internal header: included by bitreverse.h inside
-// dixelu::bitreverse::collision_resolution::solver_core.
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
+#include <limits>
+#include <vector>
+
+#include "compiled_circuit.h"
+#include "options.h"
+#include "statistics.h"
+
+namespace dixelu::bitreverse::collision_resolution::solver_core
+{
 
 struct search_budget
 {
@@ -102,5 +112,7 @@ struct solver_state
 		propagation_head = std::min(propagation_head, mark);
 	}
 };
+
+} // namespace dixelu::bitreverse::collision_resolution::solver_core
 
 #endif // DIXELU_BITREVERSE_SOLVER_STATE_H

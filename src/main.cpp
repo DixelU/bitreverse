@@ -35,11 +35,11 @@ void bitwise_reversal_test()
 
 		dixelu::bitreverse::assign_assert_result<d>(unk_copy, solution.assignments);
 
-		std::cout << "Got:\t\t " << unk_copy.__to_string() << std::endl;
-		std::cout << "Expected:\t " << (target_result).__to_string() << std::endl;
+		std::cout << "Got:\t\t " << unk_copy.to_string() << std::endl;
+		std::cout << "Expected:\t " << (target_result).to_string() << std::endl;
 
-		std::cout << "Operand result:\t " << (known_value BIT_OPERAND unk_copy).__to_string() << std::endl;
-		std::cout << "Operand real:\t " << (result_expected).__to_string() << std::endl;
+		std::cout << "Operand result:\t " << (known_value BIT_OPERAND unk_copy).to_string() << std::endl;
+		std::cout << "Operand real:\t " << (result_expected).to_string() << std::endl;
 
 		++counter;
 	}
@@ -73,7 +73,7 @@ void real_crc32_reversal()
 	const size_t solution_count = dixelu::bitreverse::assert_equality(
 		is_false,
 		_false,
-		[&](const dixelu::bitreverse::collision_resolution::crs_state& solution)
+		[&](const dixelu::bitreverse::collision_resolution::solution& solution)
 		{
 			++counter;
 			std::cout << "=== SOLUTION " << counter << " ===" << std::endl;
@@ -83,7 +83,7 @@ void real_crc32_reversal()
 				dixelu::bitreverse::assign_assert_result<8>(
 					single_char,
 					solution.assignments);
-				auto string = single_char.__to_string();
+				auto string = single_char.to_string();
 				auto value = std::stoi(string, 0, 2);
 				std::cout << std::format(
 					"{} ({:3}) ~ 0b{}\n",
@@ -103,10 +103,10 @@ int main()
 	// dixelu::bitreverse::itu8 y = 0b00000011;
 	// dixelu::bitreverse::itu8 z = 0b00010000;
 	//
-	// std::cout << "x: " << x.__to_string() << std::endl;
-	// std::cout << "y: " << y.__to_string() << std::endl;
-	// std::cout << "z: " << z.__to_string() << std::endl;
-	// std::cout << "S: " << (x + y + z).__to_string() << std::endl;
+	// std::cout << "x: " << x.to_string() << std::endl;
+	// std::cout << "y: " << y.to_string() << std::endl;
+	// std::cout << "z: " << z.to_string() << std::endl;
+	// std::cout << "S: " << (x + y + z).to_string() << std::endl;
 
 	// bitwise_reversal_test();
 

@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "bitreverse.h"
+#include "hash_common.h"
 
 namespace dixelu::bitreverse::hash
 {
@@ -15,7 +16,8 @@ template<template<size_t> typename integer>
 integer<256> sha256(std::vector<integer<8>> message)
 {
 	using uint32 = integer<32>;
-	using uint256 = integer<256>;
+	using detail::byte_order;
+	using detail::rotr;
 
 	constexpr std::uint32_t constants[64] = {
 		0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
@@ -36,20 +38,7 @@ integer<256> sha256(std::vector<integer<8>> message)
 		0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 	};
 
-	const std::uint64_t message_size_bits =
-		static_cast<std::uint64_t>(message.size()) * 8;
-
-	message.push_back(0x80);
-	while (message.size() % 64 != 56)
-		message.push_back(0);
-
-	for (size_t byte = 0; byte < 8; ++byte)
-		message.push_back(static_cast<std::uint8_t>(message_size_bits >> (56 - byte * 8)));
-
-	const auto rotate = [](const uint32& word, size_t shift)
-	{
-		return (word >> shift) | (word << (32 - shift));
-	};
+	detail::pad(message, byte_order::big);
 
 	uint32 state[8] = {
 		0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
@@ -60,19 +49,14 @@ integer<256> sha256(std::vector<integer<8>> message)
 	{
 		uint32 words[64];
 		for (size_t word = 0; word < 16; ++word)
-		{
-			const size_t offset = block + word * 4;
-			words[word] = (uint32(message[offset]) << 24) |
-				(uint32(message[offset + 1]) << 16) |
-				(uint32(message[offset + 2]) << 8) | uint32(message[offset + 3]);
-		}
+			words[word] = detail::load_word(message, block + word * 4, byte_order::big);
 
 		for (size_t word = 16; word < 64; ++word)
 		{
-			const auto sigma0 = rotate(words[word - 15], 7) ^
-				rotate(words[word - 15], 18) ^ (words[word - 15] >> 3);
-			const auto sigma1 = rotate(words[word - 2], 17) ^
-				rotate(words[word - 2], 19) ^ (words[word - 2] >> 10);
+			const auto sigma0 = rotr(words[word - 15], 7) ^
+				rotr(words[word - 15], 18) ^ (words[word - 15] >> 3);
+			const auto sigma1 = rotr(words[word - 2], 17) ^
+				rotr(words[word - 2], 19) ^ (words[word - 2] >> 10);
 			words[word] = words[word - 16] + sigma0;
 			words[word] += words[word - 7];
 			words[word] += sigma1;
@@ -82,7 +66,7 @@ integer<256> sha256(std::vector<integer<8>> message)
 		uint32 e = state[4], f = state[5], g = state[6], h = state[7];
 		for (size_t round = 0; round < 64; ++round)
 		{
-			const auto sum1 = rotate(e, 6) ^ rotate(e, 11) ^ rotate(e, 25);
+			const auto sum1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
 			const auto choose = (e & f) ^ (~e & g);
 			uint32 temp1 = h + sum1;
 
@@ -90,7 +74,7 @@ integer<256> sha256(std::vector<integer<8>> message)
 			temp1 += constants[round];
 			temp1 += words[round];
 
-			const auto sum0 = rotate(a, 2) ^ rotate(a, 13) ^ rotate(a, 22);
+			const auto sum0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
 			const auto majority = (a & b) ^ (a & c) ^ (b & c);
 			const uint32 temp2 = sum0 + majority;
 
@@ -115,11 +99,7 @@ integer<256> sha256(std::vector<integer<8>> message)
 		state[7] += h;
 	}
 
-	uint256 digest = 0;
-	for (size_t word = 0; word < 8; ++word)
-		digest |= uint256(state[word]) << (224 - word * 32);
-
-	return digest;
+	return detail::pack_digest(state, byte_order::big);
 }
 
 } // namespace dixelu::bitreverse::hash

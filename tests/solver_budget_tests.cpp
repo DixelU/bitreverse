@@ -1,32 +1,34 @@
-#include <iostream>
-#include <stdexcept>
+// max_search_steps: deterministic accounting, and solver_limit instead of a
+// misleading result when the budget runs out.
+
+#include <cstddef>
+#include <memory>
+#include <utility>
+#include <vector>
+
 #include "bitreverse.h"
+#include "test_support.h"
 
 namespace br = dixelu::bitreverse;
 namespace cr = br::collision_resolution;
 using circuit = cr::solver_core::compiled_circuit;
 using bindings = std::vector<std::pair<size_t, bool>>;
+using test::require;
 
 namespace
 {
-void require(bool condition, const char* message)
-{
-	if (!condition) throw std::runtime_error(message);
-}
 
 template<class Function>
 void require_limit(Function&& function)
 {
-	try { function(); }
-	catch (const br::solver_limit&) { return; }
-	throw std::runtime_error("unfinished search must throw solver_limit");
+	test::require_throws<br::solver_limit>(std::forward<Function>(function), "unfinished search must throw solver_limit");
 }
 
 void check_query(const std::shared_ptr<const circuit>& graph,
 	const bindings& bound, size_t expected, br::solver_options options)
 {
 	br::solver_statistics unlimited;
-	const auto stop_after_model = [](const cr::crs_state&) { return false; };
+	const auto stop_after_model = [](const cr::solution&) { return false; };
 	require(cr::solve_compiled_stream(graph, bound, stop_after_model, options, &unlimited) == expected,
 		"unlimited query returned incorrect SAT/UNSAT result");
 	require(unlimited.search_steps > 1, "search steps must be recorded in unlimited mode");
@@ -54,28 +56,24 @@ void check_query(const std::shared_ptr<const circuit>& graph,
 	require(unfinished.search_steps == 1, "each run must reset its budget and statistics");
 }
 
-void engine_tests(bool cdcl, bool affine)
+void budgets(br::solver_options options)
 {
-	br::solver_options options;
-	options.conflict_learning = cdcl;
-	options.affine_reasoning = affine;
-	br::bit_tracker a, b;
-	a = br::unknown;
-	b = br::unknown;
-	std::vector<br::bit_tracker> clauses{a | b, ~a | b, a | ~b, ~a | ~b};
-	std::vector<decltype(a.bit_state)> roots;
-	for (const auto& clause : clauses) roots.push_back(clause.bit_state);
+	const br::bit_tracker a = br::unknown, b = br::unknown;
+	std::vector<dixelu::counted_ptr<br::details::bitstate>> roots;
+	for (const auto& clause : test::contradiction(a, b))
+		roots.push_back(clause.bit_state);
 	const auto graph = std::make_shared<const circuit>(roots);
 	bindings bound;
-	for (size_t i = 0; i < 3; ++i) bound.emplace_back(graph->root_ids[i], true);
+	for (size_t i = 0; i < 3; ++i)
+		bound.emplace_back(graph->root_ids[i], true);
 	check_query(graph, bound, 1, options);
 	bound.emplace_back(graph->root_ids[3], true);
 	check_query(graph, bound, 0, options);
 
 	// Exercise active Gaussian propagation, including its internal budget ticks.
-	if (affine)
+	if (options.affine_reasoning)
 	{
-		auto parity = a ^ b;
+		const auto parity = a ^ b;
 		const auto xor_graph = std::make_shared<const circuit>(parity.bit_state);
 		check_query(xor_graph, {{xor_graph->root_id, true}}, 1, options);
 	}
@@ -103,20 +101,14 @@ void engine_tests(bool cdcl, bool affine)
 	require_limit([&] { (void)cr::solve(a, true, true, options); });
 	require_limit([&] { (void)cr::solve_stream(a, true, [](const auto&) { return false; }, options); });
 }
-}
+
+} // namespace
 
 int main()
 {
-	try
-	{
-		engine_tests(false, false);
-		engine_tests(false, true);
-		engine_tests(true, false);
-		std::cout << "All solver budget tests passed\n";
-	}
-	catch (const std::exception& error)
-	{
-		std::cerr << error.what() << '\n';
-		return 1;
-	}
+	return test::run("solver_budget", {
+		{"dpll", [] { budgets(test::dpll); }},
+		{"dpll_affine", [] { budgets(test::dpll_affine); }},
+		{"cdcl", [] { budgets(test::cdcl); }},
+	});
 }

@@ -17,28 +17,28 @@ struct header { void* allocation; std::size_t size; };
 
 inline void* allocate(std::size_t size, std::size_t alignment)
 {
-    alignment = alignment < alignof(header) ? alignof(header) : alignment;
-    const auto overhead = sizeof(header) + alignment - 1;
-    if (size > std::numeric_limits<std::size_t>::max() - overhead)
-        throw std::bad_alloc();
-    void* raw = std::malloc(size + overhead);
-    if (!raw) throw std::bad_alloc();
-    const auto address = (reinterpret_cast<std::uintptr_t>(raw) + overhead)
-        & ~(static_cast<std::uintptr_t>(alignment) - 1);
-    auto* metadata = reinterpret_cast<header*>(address) - 1;
-    *metadata = {raw, size};
-    live += size;
-    if (live > peak) peak = live;
-    ++calls;
-    return reinterpret_cast<void*>(address);
+	alignment = alignment < alignof(header) ? alignof(header) : alignment;
+	const auto overhead = sizeof(header) + alignment - 1;
+	if (size > std::numeric_limits<std::size_t>::max() - overhead)
+		throw std::bad_alloc();
+	void* raw = std::malloc(size + overhead);
+	if (!raw) throw std::bad_alloc();
+	const auto address = (reinterpret_cast<std::uintptr_t>(raw) + overhead)
+		& ~(static_cast<std::uintptr_t>(alignment) - 1);
+	auto* metadata = reinterpret_cast<header*>(address) - 1;
+	*metadata = {raw, size};
+	live += size;
+	if (live > peak) peak = live;
+	++calls;
+	return reinterpret_cast<void*>(address);
 }
 
 inline void release(void* pointer) noexcept
 {
-    if (!pointer) return;
-    const auto* metadata = static_cast<header*>(pointer) - 1;
-    live -= metadata->size;
-    std::free(metadata->allocation);
+	if (!pointer) return;
+	const auto* metadata = static_cast<header*>(pointer) - 1;
+	live -= metadata->size;
+	std::free(metadata->allocation);
 }
 }
 

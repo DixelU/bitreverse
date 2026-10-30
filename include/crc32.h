@@ -13,19 +13,16 @@ namespace dixelu::bitreverse::hash
 template<template<size_t> typename integer>
 integer<32> crc32(const std::vector<integer<8>>& message)
 {
-	integer<32> byte;
-	integer<32> mask;
 	integer<32> crc = 0xFFFFFFFF;
 	const integer<32> polynomial = 0xEDB88320;
 
-	for (const auto& character : message)
+	for (const auto& byte : message)
 	{
-		byte = integer<32>(character);
-		crc ^= byte;
+		crc ^= integer<32>(byte);
 
 		for (int bit = 0; bit < 8; ++bit)
 		{
-			mask = -(crc & 1);
+			const auto mask = -(crc & 1);
 			crc = (crc >> 1) ^ (polynomial & mask);
 		}
 	}
@@ -33,6 +30,6 @@ integer<32> crc32(const std::vector<integer<8>>& message)
 	return ~crc;
 }
 
-}
+} // namespace dixelu::bitreverse::hash
 
-#endif
+#endif // DIXELU_BITREVERSE_CRC32_H

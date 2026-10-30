@@ -1,18 +1,18 @@
-#include "circuit_metrics.h"
+// measure_circuit: node, gate, depth and fanout counts of tracked DAGs.
 
 #include <cmath>
-#include <iostream>
+#include <cstddef>
 #include <numeric>
-#include <stdexcept>
+#include <vector>
+
+#include "circuit_metrics.h"
+#include "test_support.h"
 
 namespace br = dixelu::bitreverse;
+using test::require;
 
 namespace
 {
-void require(bool condition, const char* message)
-{
-	if (!condition) throw std::runtime_error(message);
-}
 
 void empty_and_constant_tests()
 {
@@ -34,8 +34,7 @@ void empty_and_constant_tests()
 
 void shared_dag_test()
 {
-	br::bit_tracker a, b, c, unused;
-	a = br::unknown; b = br::unknown; c = br::unknown; unused = br::unknown;
+	const br::bit_tracker a = br::unknown, b = br::unknown, c = br::unknown, unused = br::unknown;
 	const auto shared = a ^ b;
 	const auto inverted = ~shared;
 	const auto conjunction = shared & c;
@@ -66,8 +65,7 @@ void shared_dag_test()
 
 void discovery_order_and_integer_tests()
 {
-	br::bit_tracker a, b;
-	a = br::unknown; b = br::unknown;
+	const br::bit_tracker a = br::unknown, b = br::unknown;
 	const auto intermediate = a ^ b;
 	const auto last = ~intermediate;
 	// A leaf and an interior node are also roots. Neither forward nor reverse
@@ -89,8 +87,7 @@ void discovery_order_and_integer_tests()
 
 void repeated_operand_test()
 {
-	br::bit_tracker a;
-	a = br::unknown;
+	const br::bit_tracker a = br::unknown;
 	// Bypass simplification deliberately to exercise a repeated operand edge.
 	auto state = dixelu::make_counted<br::details::bitstate>();
 	state->operation = '^'; state->_1 = a.bit_state; state->_2 = a.bit_state;
@@ -101,21 +98,14 @@ void repeated_operand_test()
 		metrics.widths == std::vector<size_t>({1, 1}),
 		"repeated operand slots must count as two edges without duplicating nodes");
 }
-}
+} // namespace
 
 int main()
 {
-	try
-	{
-		empty_and_constant_tests();
-		shared_dag_test();
-		discovery_order_and_integer_tests();
-		repeated_operand_test();
-		std::cout << "All circuit metrics tests passed\n";
-	}
-	catch (const std::exception& error)
-	{
-		std::cerr << error.what() << '\n';
-		return 1;
-	}
+	return test::run("circuit_metrics", {
+		{"empty_and_constant", empty_and_constant_tests},
+		{"shared_dag", shared_dag_test},
+		{"discovery_order_and_integer", discovery_order_and_integer_tests},
+		{"repeated_operand", repeated_operand_test},
+	});
 }

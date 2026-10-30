@@ -1,8 +1,18 @@
 #ifndef DIXELU_BITREVERSE_SOLVER_PROPAGATION_CLAUSES_H
 #define DIXELU_BITREVERSE_SOLVER_PROPAGATION_CLAUSES_H
 
-// Internal header: included by bitreverse.h inside
-// dixelu::bitreverse::collision_resolution::cdcl.
+#include <array>
+#include <cstdint>
+#include <initializer_list>
+#include <limits>
+#include <span>
+#include <stdexcept>
+#include <vector>
+
+#include "../compiled_circuit.h"
+
+namespace dixelu::bitreverse::collision_resolution::solver_core
+{
 
 using literal_t = std::uint32_t;
 using clause_id = std::uint32_t;
@@ -112,5 +122,7 @@ struct clause_database
 			learned, watch_literals);
 	}
 };
+
+} // namespace dixelu::bitreverse::collision_resolution::solver_core
 
 #endif // DIXELU_BITREVERSE_SOLVER_PROPAGATION_CLAUSES_H

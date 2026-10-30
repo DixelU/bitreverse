@@ -1,139 +1,114 @@
-# Assertions during graph construction
+# Assertions during construction
 
-Include `partial_assert.h` (with `include/` on the compiler's include search path)
-to use an explicit constraint context without `program::compile`:
+`partial_assert.h` provides `partial_assert_context`, which applies constraints
+while an algorithm is being built. Each assertion propagates its consequences,
+and `simplify` folds the values it proves into later expressions, so the rest
+of the algorithm is built on a smaller graph. The context never chooses values;
+only its `solve` searches. It is independent of `inversion::program`.
 
 ```cpp
 #include "partial_assert.h"
 namespace br = dixelu::bitreverse;
 
 br::partial_assert_context constraints;
-br::int_tracker<32> input = br::unknown;
-auto state = input ^ br::int_tracker<32>(0x12345678);
-const br::int_tracker<32> mask = 0x0100010f;
-const br::int_tracker<32> observed = 0x00000105;
+const br::itu32 input = br::unknown;
+auto state = input ^ br::itu32(0x12345678);
 
-// Two-argument shorthand for tracked integer equality. Unselected bits on
-// both sides are excluded from the comparison.
-constraints.partial_assert(state & mask, observed & mask);
-state = constraints.simplify(state);
+// Observe the bits selected by mask; the masked-out bits are zero on both sides.
+const br::itu32 mask = 0x0100010f;
+constraints.partial_assert(state & mask, br::itu32(0x00000105) & mask);
+state = constraints.simplify(state);        // fold the inferred constants
 
-// Build the rest of the algorithm from the simplified live values.
-auto output = state + br::int_tracker<32>(7);
-constraints.partial_assert(output, br::int_tracker<32>(0x1234550c));
+// Continue the algorithm from the simplified value, then assert its output.
+const auto output = state + br::itu32(7);
+constraints.partial_assert(output, br::itu32(0x1234550c));
 
-// Keep the original input leaves, even if a simplified expression no longer
-// mentions some of them. A zero result means UNSAT; one is the default limit.
-std::vector<br::bit_tracker> inputs(input.bits.begin(), input.bits.end());
-constraints.solve(inputs, [&](const br::collision_resolution::crs_state& model)
+// List the original input leaves: simplification may have removed some.
+const std::vector<br::bit_tracker> inputs(input.bits.begin(), input.bits.end());
+constraints.solve(inputs, [&](const br::collision_resolution::solution& model)
 {
-    // model.assignments maps original unknown leaves to their Boolean values.
-    return true;
-});
+    auto value = input;
+    br::assign_assert_result(value, model.assignments);   // 0x0000037d
+    return true;                            // false stops the enumeration
+});                                         // max_solutions defaults to 1; 0 = all
 ```
 
-`partial_assert(condition)` also accepts any tracked Boolean expression.
-For example, `partial_assert(x | y)` keeps both alternatives; adding
-`partial_assert(!x)` subsequently forces `y`. It never chooses a satisfying
-assignment and pretends it was a necessary consequence.
+## API
 
-Every assertion retains its original relation, propagates AND/OR/XOR/NOT
-implications, and optionally combines XOR equations over GF(2). Equality works
-between different expression DAGs; shared subtrees are not required. Unresolved
-relations remain constraints for the final solve. This version substitutes
-proven constants; it does not merge arbitrary equal symbolic expressions.
+| Member | Effect |
+|---|---|
+| `partial_assert(condition)` | Requires a tracked bit to be true. |
+| `partial_assert(lhs, rhs)` | Requires two `int_tracker<N>` values to be equal. |
+| `simplify(value)` | Returns a copy of a bit, an `int_tracker<N>` or a `std::vector<int_tracker<N>>` with every proven node replaced by its constant. |
+| `solve(inputs, callback = {}, max_solutions = 1, options = {}, statistics = nullptr)` | Searches for models of all requirements; returns their count. |
+| `requirements()`, `assertion_count()` | The asserted conditions, in order. |
+| `known_variable_count()` | Unknown leaves with a proven value. |
+| `statistics()` | `solver_statistics` of the last successful assertion. |
 
-Call `simplify` on the live values that later operations consume. It supports a
-tracked bit, tracked integer, or vector of tracked integers. It returns a new
-expression with inferred constants folded, preserves unresolved input identity,
-and does not mutate the source DAG. A simplified expression is valid under its
-context's constraints: use `context.solve` to retain them, or explicitly carry
-`context.requirements()` into another solver. Simplifying a requirement to
-`true` does not remove the original requirement from the context.
+Assertions:
 
-The API is incremental for callers. Each assertion currently rebuilds solver
-adjacency from the accumulated roots and seeds previously inferred facts into a
-fresh propagation state. It does not yet maintain persistent adjacency or
-learned clauses between calls, so excessive checkpoints can cost more than they
-save. Final solving also reuses the inferred facts alongside the original
-constraints.
+- Each assertion keeps the original condition, then propagates AND/OR/XOR/NOT
+  implications and, within the affine limits, GF(2) reasoning over all
+  requirements so far. The two sides of an equality need not share
+  subexpressions.
+- Only forced values are recorded. `partial_assert(x | y)` keeps both
+  alternatives; a later `partial_assert(!x)` then forces `y`.
+- Proven constants are substituted; equal symbolic expressions are not merged.
+- An assertion is transactional: on any error the requirements, proven values
+  and statistics stay as they were.
+- Success is not a satisfiability proof. Contradictions that need search appear
+  only in `solve`.
+- Each assertion recompiles all requirements and reseeds the values proven so
+  far. Nothing else carries over between calls, so many small checkpoints cost
+  repeated work.
 
-## Results and limits
+`simplify` does not change the source DAG, and unresolved unknowns keep their
+identity. A simplified expression is valid only together with the context's
+requirements: solve it with `context.solve`, or pass `context.requirements()`
+to another solver. A requirement that simplifies to true stays in the context.
 
-`statistics()` describes the last successful assertion. Its `decisions` and
-`solutions` are always zero: assertion propagation generates no complete
-candidates. `known_variable_count()` counts forced original unknown leaves.
-Successful propagation is not a satisfiability proof; nonlinear contradictions
-can remain until `solve`. That method can enumerate models, with zero meaning
-all models for its `max_solutions` argument. Returning false from its callback
-stops enumeration; an empty callback just counts. Counts include every retained
-unknown, including auxiliary unknowns in requirements, not only listed inputs.
+`solve` binds every requirement to true, adds the proven values and runs the
+[solver](SOLVER.md). `inputs` must be unknown leaves or constants; listing them
+keeps inputs that simplification removed from the requirements. A model
+assigns every unknown in the requirements and the inputs, so the count is over
+complete models, not only over the listed inputs. `max_solutions = 0`
+enumerates all models; a callback returning false stops; an empty callback
+only counts. `statistics()` reports `decisions == 0` and `solutions == 0`,
+because assertions never branch.
 
-A detected contradiction throws `partial_assert_conflict`. Exceeding the node
-or propagation-step limit throws `partial_assert_limit`. Failed assertions leave
-requirements, facts, and the last successful statistics unchanged. A final solve
-has its own `solver_options::max_search_steps`; exhausting it throws
-`solver_limit`, which must not be interpreted as UNSAT.
+## Options and errors
 
-Defaults are 200,000 graph nodes, 2,000,000 propagation steps per assertion,
-4,096 affine atoms, and 64 MiB for dense affine coefficients plus elimination
-row coefficients. The byte cap excludes container metadata and ordinary graph
-storage. Affine propagation falls back to gate propagation above its atom or
-byte cap, or when an XOR/NOT chain exceeds 512 gates. Node and step caps are
-positive; `max_affine_atoms = 0` disables affine reasoning. Compilation and
-affine initialization are outside the propagation-step budget, bounded instead
-by the graph, coefficient, and depth checks. `simplify` and `solve` also enforce
-the context's graph node cap.
+| `partial_assert_options` | Default | Meaning |
+|---|---:|---|
+| `max_nodes` | 200000 | Graph nodes per assertion, `simplify` and `solve` |
+| `max_steps` | 2000000 | Propagation steps per assertion |
+| `max_affine_atoms` | 4096 | 0 disables affine reasoning |
+| `max_affine_bytes` | 67108864 | Dense affine coefficients plus elimination rows |
+| `affine_reasoning` | true | |
 
-## CRC32 and MD5 experiments
+`max_nodes`, `max_steps` and `max_affine_bytes` must be positive, or the
+constructor throws `std::invalid_argument`. Affine reasoning is skipped, and
+gate propagation still runs, when the atoms or the byte estimate exceed their
+caps or a NOT/XOR chain is longer than 512 gates.
 
-Separate sources instrument the algorithms without changing `crc32.h` or
-`md5.h`. Run these commands from the repository root after configuring a build:
+| Exception | Raised when |
+|---|---|
+| `partial_assert_conflict` | Propagation finds a contradiction |
+| `partial_assert_limit` | The node or step budget is exceeded |
+| `std::invalid_argument` | A null node, a cycle, an unsupported gate, or a `solve` input that is not a leaf |
+| `solver_limit` | `solve` exhausts `options.max_search_steps`; this is not UNSAT |
+
+## Examples
+
+`examples/partial_assert_crc32.cpp` and `examples/partial_assert_md5.cpp`
+hash a message whose leading bytes are unknown and observe one masked internal
+value (a checkpoint). Each runs twice with the same two constraints: once
+asserting the checkpoint inside the algorithm, once after the digest. They
+print DAG sizes and timings for both and check the recovered input with a
+native hash. The checkpoint is extra information, not derived from the digest.
 
 ```sh
-cmake --build build --target partial_assert_tests partial_assert_crc32 partial_assert_md5
-ctest --test-dir build -R partial_assert --output-on-failure
+cmake --build build --target partial_assert_crc32 partial_assert_md5
+build/partial_assert_crc32
+build/partial_assert_md5
 ```
-
-- [`examples/partial_assert_crc32.cpp`](../examples/partial_assert_crc32.cpp): two unknown prefix bytes, a known suffix, and
-  16 observed bits of the internal CRC after the prefix.
-- [`examples/partial_assert_md5.cpp`](../examples/partial_assert_md5.cpp): one unknown byte, three known bytes, and eight
-  observed bits of the working state after the first MD5 round.
-
-Each compares applying the checkpoint inside the algorithm against building the
-whole algorithm before applying the **same checkpoint and final digest**. The
-observed intermediate bits are additional supplied information. They are not
-obtained from the final digest, and these cases do not establish a method for
-general MD5 inversion. The chosen checkpoints completely determine the small
-unknown domains, demonstrating the favorable case for early simplification.
-
-Both examples independently evaluate recovered inputs using native arithmetic
-and verify checkpoint uniqueness over their small domains. That reference
-enumeration is outside the timed experiment and supplies no assignments to the
-constraint context. Printed candidate counts refer to final solver models,
-not that independent verification enumeration. Reported graph sizes count
-reachable distinct DAG nodes, not tree width or peak allocations. Timings are
-single-run measurements including assertion propagation and simplification,
-and will vary by machine.
-
-Release measurements on 2026-09-16, Windows x64, GCC 15.2 with `-O3`:
-
-| Example | Checkpoint timing | Digest DAG nodes | Retained DAG nodes | Build + assertions | Final solve |
-|---|---|---:|---:|---:|---:|
-| CRC32 | Inside algorithm | 2 | 176 | 0.559 ms | 0.084 ms |
-| CRC32 | After algorithm | 2,135 | 2,206 | 1.180 ms | 1.120 ms |
-| MD5 | Inside algorithm | 2 | 65 | 0.584 ms | 0.040 ms |
-| MD5 | After algorithm | 31,751 | 31,944 | 13.492 ms | 10.719 ms |
-
-CRC32's checkpoint inferred all 16 unknown input bits; MD5's inferred all eight.
-Both modes produced exactly one candidate with zero final search decisions.
-The difference here is construction and propagation cost, not the number of
-surviving solutions. Two digest nodes means the outputs became references to
-the shared `true` and `false` constants; the retained graph still includes the
-checkpoint constraints needed to justify those constants.
-
-Validation: the new unit tests, both example self-checks, and the existing bit
-tracker, solver-budget, inverse, and affine-inverse suites passed (7 CTest
-targets). Unit tests compare small randomly generated Boolean formulas against
-exhaustive native truth tables, check rollback and retained identities, and
-exercise resource fallback, malformed DAG rejection, and both solver engines.

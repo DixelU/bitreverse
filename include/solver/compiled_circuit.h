@@ -1,8 +1,21 @@
 #ifndef DIXELU_BITREVERSE_SOLVER_COMPILED_CIRCUIT_H
 #define DIXELU_BITREVERSE_SOLVER_COMPILED_CIRCUIT_H
 
-// Internal header: included by bitreverse.h inside
-// dixelu::bitreverse::collision_resolution::solver_core.
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <memory>
+#include <ranges>
+#include <span>
+#include <stdexcept>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+#include "../tracker.h"
+
+namespace dixelu::bitreverse::collision_resolution::solver_core
+{
 
 using node_t = const details::bitstate*;
 using node_id = size_t;
@@ -103,6 +116,9 @@ struct compiled_circuit
 		return id;
 	}
 
+	// Node IDs are assigned breadth-first from the roots. This order is part
+	// of the saved inverse format: program::load re-serializes the rebuilt
+	// circuit to verify the checksum, so changing it breaks existing files.
 	void build()
 	{
 		for (const auto& root : root_ptrs)
@@ -155,5 +171,7 @@ inline void validate_bindings(
 			throw std::out_of_range("Compiled circuit binding has an invalid node ID");
 	}
 }
+
+} // namespace dixelu::bitreverse::collision_resolution::solver_core
 
 #endif // DIXELU_BITREVERSE_SOLVER_COMPILED_CIRCUIT_H

@@ -1,14 +1,21 @@
 #ifndef DIXELU_BITREVERSE_SOLVER_PROPAGATION_REASONED_GATES_H
 #define DIXELU_BITREVERSE_SOLVER_PROPAGATION_REASONED_GATES_H
 
-// Internal header: included by bitreverse.h inside
-// dixelu::bitreverse::collision_resolution::cdcl.
-//
-// Original circuit clauses are retained as implication/conflict reasons, but
-// are not watched. Native gate propagation is substantially cheaper than
-// revisiting the equivalent Tseitin clauses. Learned and model-blocking
-// clauses continue to use the general watched-literal propagator.
+#include <array>
+#include <cstdint>
+#include <initializer_list>
+#include <stdexcept>
+#include <vector>
 
+#include "clauses.h"
+
+namespace dixelu::bitreverse::collision_resolution::solver_core
+{
+
+// Gate propagation for CDCL. The circuit's Tseitin clauses are retained as
+// implication/conflict reasons but are not watched: native gate propagation
+// is substantially cheaper than revisiting them. Learned and model-blocking
+// clauses use the general watched-literal propagator.
 struct reasoned_gate_propagator
 {
 	const compiled_circuit& circuit;
@@ -255,5 +262,7 @@ struct reasoned_gate_propagator
 		throw std::logic_error("Unknown gate operation");
 	}
 };
+
+} // namespace dixelu::bitreverse::collision_resolution::solver_core
 
 #endif // DIXELU_BITREVERSE_SOLVER_PROPAGATION_REASONED_GATES_H

@@ -1,207 +1,82 @@
 cmake_minimum_required(VERSION 3.25)
-project(bitreverse)
-
-set(CMAKE_CXX_STANDARD 23)
+project(bitreverse LANGUAGES CXX)
 
 add_library(bitreverse_headers INTERFACE)
 add_library(bitreverse::headers ALIAS bitreverse_headers)
 target_include_directories(bitreverse_headers INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/include")
 target_compile_features(bitreverse_headers INTERFACE cxx_std_23)
 
-add_executable(bitreverse src/main.cpp)
-target_link_libraries(bitreverse PRIVATE bitreverse::headers)
+# Helpers shared by the tests, examples and benchmarks; not part of the library.
+include_directories("${CMAKE_CURRENT_SOURCE_DIR}/support")
 
-target_compile_options(bitreverse PUBLIC -Wall -Wextra -Wuninitialized -pedantic -fstack-protector-all -O3 -ggdb)
-target_link_options(bitreverse PRIVATE -static-libgcc -static-libstdc++ -static)
-#target_link_options(bitreverse PUBLIC -fsanitize=address)
+# -O3 even in Debug configurations: the test timeouts assume optimized code.
+function(bitreverse_executable name source)
+    add_executable(${name} ${source})
+    target_link_libraries(${name} PRIVATE bitreverse::headers)
+    target_compile_options(${name} PRIVATE -Wall -Wextra -pedantic -O3 -ggdb)
+    target_link_options(${name} PRIVATE -static)
+endfunction()
 
-add_executable(md5_reverse_demo examples/md5_demo.cpp)
-target_link_libraries(md5_reverse_demo PRIVATE bitreverse::headers)
-target_compile_options(md5_reverse_demo PUBLIC -Wall -Wextra -Wuninitialized -pedantic -fstack-protector-all -O3 -ggdb)
-target_link_options(md5_reverse_demo PRIVATE -static-libgcc -static-libstdc++ -static)
-
-add_executable(inverse_demo examples/inverse_demo.cpp)
-target_link_libraries(inverse_demo PRIVATE bitreverse::headers)
-target_compile_options(inverse_demo PUBLIC -Wall -Wextra -Wuninitialized -pedantic -fstack-protector-all -O3 -ggdb)
-target_link_options(inverse_demo PRIVATE -static-libgcc -static-libstdc++ -static)
-
-add_executable(synthesis_benchmark benchmarks/synthesis_benchmark.cpp)
-target_link_libraries(synthesis_benchmark PRIVATE bitreverse::headers)
-target_compile_options(synthesis_benchmark PRIVATE -Wall -Wextra -pedantic -O3)
-target_link_options(synthesis_benchmark PRIVATE -static-libgcc -static-libstdc++ -static)
-
-add_executable(selector_benchmark benchmarks/selector_benchmark.cpp)
-target_link_libraries(selector_benchmark PRIVATE bitreverse::headers)
-target_compile_options(selector_benchmark PRIVATE -Wall -Wextra -pedantic -O3)
-target_link_options(selector_benchmark PRIVATE -static-libgcc -static-libstdc++ -static)
-
-add_executable(cegis_benchmark benchmarks/cegis_benchmark.cpp)
-target_link_libraries(cegis_benchmark PRIVATE bitreverse::headers)
-target_compile_options(cegis_benchmark PRIVATE -Wall -Wextra -pedantic -O3)
-target_link_options(cegis_benchmark PRIVATE -static-libgcc -static-libstdc++ -static)
-
-add_executable(multiplication_shape_benchmark benchmarks/multiplication_shape_benchmark.cpp)
-target_link_libraries(multiplication_shape_benchmark PRIVATE bitreverse::headers)
-target_compile_options(multiplication_shape_benchmark PRIVATE -Wall -Wextra -pedantic -O3)
-
-add_executable(hash_reversal_benchmark benchmarks/hash_reversal_benchmark.cpp)
-target_link_libraries(hash_reversal_benchmark PRIVATE bitreverse::headers)
-target_compile_options(hash_reversal_benchmark PRIVATE -Wall -Wextra -pedantic -O3)
-target_link_options(hash_reversal_benchmark PRIVATE -static-libgcc -static-libstdc++ -static)
-
-foreach(example_target partial_assert_crc32 partial_assert_md5)
-    add_executable(${example_target} examples/${example_target}.cpp)
-    target_link_libraries(${example_target} PRIVATE bitreverse::headers)
-    target_compile_options(${example_target} PRIVATE -Wall -Wextra -pedantic -O3)
+bitreverse_executable(bitreverse src/main.cpp)
+bitreverse_executable(mrev src/multiplication_reversal.cpp)
+foreach(example inverse_demo partial_assert_crc32 partial_assert_md5)
+    bitreverse_executable(${example} examples/${example}.cpp)
 endforeach()
-target_include_directories(partial_assert_md5 PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks")
-
-add_executable(mrev src/multiplication_reversal.cpp)
-target_link_libraries(mrev PRIVATE bitreverse::headers)
-target_compile_options(mrev PUBLIC -Wall -Wextra -Wuninitialized -pedantic -fstack-protector-all -O3 -ggdb)
-target_link_options(mrev PRIVATE -static-libgcc -static-libstdc++ -static)
-
-add_executable(int_tracker_benchmark benchmarks/int_tracker_benchmark.cpp)
-target_link_libraries(int_tracker_benchmark PRIVATE bitreverse::headers)
-target_compile_options(int_tracker_benchmark PUBLIC -Wall -Wextra -Wuninitialized -pedantic -fstack-protector-all -O3 -ggdb)
-target_link_options(int_tracker_benchmark PRIVATE -static-libgcc -static-libstdc++ -static)
-
-add_executable(arithmetic_circuit_benchmark benchmarks/arithmetic_circuit_benchmark.cpp)
-target_link_libraries(arithmetic_circuit_benchmark PRIVATE bitreverse::headers)
-target_compile_options(arithmetic_circuit_benchmark PRIVATE -Wall -Wextra -pedantic -O3)
-target_link_options(arithmetic_circuit_benchmark PRIVATE -static-libgcc -static-libstdc++ -static)
+foreach(benchmark arithmetic_circuit cegis hash_reversal int_tracker multiplication_shape selector synthesis)
+    bitreverse_executable(${benchmark}_benchmark benchmarks/${benchmark}_benchmark.cpp)
+endforeach()
 
 include(CTest)
+if(NOT BUILD_TESTING)
+    return()
+endif()
 
-if(BUILD_TESTING)
-    add_executable(partial_assert_tests tests/partial_assert_tests.cpp)
-    target_link_libraries(partial_assert_tests PRIVATE bitreverse::headers)
-    target_compile_options(partial_assert_tests PRIVATE -Wall -Wextra -pedantic -O3)
-    foreach(partial_assert_target partial_assert_tests partial_assert_crc32 partial_assert_md5)
-        add_test(NAME ${partial_assert_target} COMMAND ${partial_assert_target})
-        set_tests_properties(${partial_assert_target} PROPERTIES TIMEOUT 60)
-    endforeach()
-
-    foreach(test_target solver_budget_tests solver_search_tests cegis_tests multiplication_reversal_tests sha_tests circuit_metrics_tests arithmetic_tests)
-        add_executable(${test_target} tests/${test_target}.cpp)
-        target_link_libraries(${test_target} PRIVATE bitreverse::headers)
-        target_compile_options(${test_target} PRIVATE -Wall -Wextra -pedantic -O3)
-        target_link_options(${test_target} PRIVATE -static-libgcc -static-libstdc++ -static)
-        add_test(NAME ${test_target} COMMAND ${test_target})
-        set_tests_properties(${test_target} PROPERTIES TIMEOUT 60)
-    endforeach()
-
-    add_executable(buffered_object_pool_tests tests/buffered_object_pool_tests.cpp)
-    target_link_libraries(buffered_object_pool_tests PRIVATE bitreverse::headers)
-    target_compile_options(buffered_object_pool_tests PUBLIC -Wall -Wextra -Wuninitialized -pedantic)
-    target_link_options(buffered_object_pool_tests PRIVATE -static-libgcc -static-libstdc++ -static)
-    add_test(NAME buffered_object_pool_tests COMMAND buffered_object_pool_tests)
-    set_tests_properties(buffered_object_pool_tests PROPERTIES TIMEOUT 10)
-
-    add_executable(bitreverse_tests tests/tests.cpp)
-    target_link_libraries(bitreverse_tests PRIVATE bitreverse::headers)
-    target_compile_options(bitreverse_tests PUBLIC -Wall -Wextra -Wuninitialized -pedantic -fstack-protector-all -O3 -ggdb)
-    target_link_options(bitreverse_tests PRIVATE -static-libgcc -static-libstdc++ -static)
-    add_test(NAME bitreverse_tests COMMAND bitreverse_tests)
-    set_tests_properties(bitreverse_tests PROPERTIES TIMEOUT 10)
-
-    add_executable(inverse_tests tests/inverse_tests.cpp)
-    target_link_libraries(inverse_tests PRIVATE bitreverse::headers)
-    target_compile_options(inverse_tests PUBLIC -Wall -Wextra -Wuninitialized -pedantic -fstack-protector-all -O3 -ggdb)
-    target_link_options(inverse_tests PRIVATE -static-libgcc -static-libstdc++ -static)
-    add_test(NAME inverse_tests COMMAND inverse_tests)
-    set_tests_properties(inverse_tests PROPERTIES TIMEOUT 30)
-
-    add_executable(affine_inverse_tests tests/affine_inverse_tests.cpp)
-    target_link_libraries(affine_inverse_tests PRIVATE bitreverse::headers)
-    target_compile_options(affine_inverse_tests PUBLIC -Wall -Wextra -Wuninitialized -pedantic -O3)
-    target_link_options(affine_inverse_tests PRIVATE -static-libgcc -static-libstdc++ -static)
-    add_test(NAME affine_inverse_tests COMMAND affine_inverse_tests)
-    set_tests_properties(affine_inverse_tests PROPERTIES TIMEOUT 15)
-
-    add_executable(synthesis_tests tests/synthesis_tests.cpp)
-    target_link_libraries(synthesis_tests PRIVATE bitreverse::headers)
-    target_compile_options(synthesis_tests PRIVATE -Wall -Wextra -Wuninitialized -pedantic -O3)
-    target_link_options(synthesis_tests PRIVATE -static-libgcc -static-libstdc++ -static)
-    add_test(NAME synthesis_tests COMMAND synthesis_tests)
-    set_tests_properties(synthesis_tests PROPERTIES TIMEOUT 30)
-
-    add_executable(selector_tests tests/selector_tests.cpp)
-    target_link_libraries(selector_tests PRIVATE bitreverse::headers)
-    target_include_directories(selector_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks")
-    target_compile_options(selector_tests PRIVATE -Wall -Wextra -Wuninitialized -pedantic -O3)
-    target_link_options(selector_tests PRIVATE -static-libgcc -static-libstdc++ -static)
-    add_test(NAME selector_tests COMMAND selector_tests)
-    set_tests_properties(selector_tests PROPERTIES TIMEOUT 60)
-
-    add_test(NAME synthesis_cpp_export
-        COMMAND ${CMAKE_COMMAND}
-            "-DINVERSE_DEMO=$<TARGET_FILE:inverse_demo>"
-            "-DCXX=${CMAKE_CXX_COMPILER}"
-            "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/synthesis-export-test"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/synthesis_cli_test.cmake")
-    set_tests_properties(synthesis_cpp_export PROPERTIES TIMEOUT 90)
-
-    add_test(NAME selector_cpp_export
-        COMMAND ${CMAKE_COMMAND}
-            "-DINVERSE_DEMO=$<TARGET_FILE:inverse_demo>"
-            "-DCXX=${CMAKE_CXX_COMPILER}"
-            "-DMETHOD=synthesize-selector"
-            "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/selector-export-test"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/synthesis_cli_test.cmake")
-    set_tests_properties(selector_cpp_export PROPERTIES TIMEOUT 90)
-
-    add_test(NAME cegis_cpp_export
-        COMMAND ${CMAKE_COMMAND}
-            "-DINVERSE_DEMO=$<TARGET_FILE:inverse_demo>"
-            "-DCXX=${CMAKE_CXX_COMPILER}"
-            "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/cegis-export-test"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/cegis_cli_test.cmake")
-    set_tests_properties(cegis_cpp_export PROPERTIES TIMEOUT 90)
-
-    add_test(NAME inverse_cli_persistence
-        COMMAND ${CMAKE_COMMAND}
-            "-DINVERSE_DEMO=$<TARGET_FILE:inverse_demo>"
-            "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/inverse-cli-test"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/inverse_cli_test.cmake")
-    set_tests_properties(inverse_cli_persistence PROPERTIES TIMEOUT 30)
-
-    add_test(NAME int_tracker_performance_regression COMMAND int_tracker_benchmark)
-    set_tests_properties(
-        int_tracker_performance_regression
-        PROPERTIES
-            LABELS performance
-            TIMEOUT 15)
-
-    if(MINGW)
-        get_filename_component(
-            BITREVERSE_MINGW_RUNTIME_DIR
-            "${CMAKE_CXX_COMPILER}"
-            DIRECTORY)
-        set_tests_properties(
-            partial_assert_tests
-            partial_assert_crc32
-            partial_assert_md5
-            solver_budget_tests
-            solver_search_tests
-            cegis_tests
-            multiplication_reversal_tests
-            sha_tests
-            circuit_metrics_tests
-            arithmetic_tests
-            buffered_object_pool_tests
-            bitreverse_tests
-            inverse_tests
-            affine_inverse_tests
-            synthesis_tests
-            selector_tests
-            synthesis_cpp_export
-            selector_cpp_export
-            cegis_cpp_export
-            inverse_cli_persistence
-            int_tracker_performance_regression
-            PROPERTIES
-                ENVIRONMENT_MODIFICATION
-                    "PATH=path_list_prepend:${BITREVERSE_MINGW_RUNTIME_DIR}")
+# bitreverse_test(<name> [COMMAND <command>...] [TIMEOUT <seconds>] [LABELS <label>...])
+# runs the target <name> unless COMMAND is given; TIMEOUT defaults to 30.
+function(bitreverse_test name)
+    cmake_parse_arguments(PARSE_ARGV 1 test "" "TIMEOUT" "COMMAND;LABELS")
+    if(NOT test_COMMAND)
+        set(test_COMMAND ${name})
     endif()
+    if(NOT test_TIMEOUT)
+        set(test_TIMEOUT 30)
+    endif()
+    add_test(NAME ${name} COMMAND ${test_COMMAND})
+    set_tests_properties(${name} PROPERTIES TIMEOUT ${test_TIMEOUT} LABELS "${test_LABELS}")
+endfunction()
+
+foreach(suite affine_inverse arithmetic cegis circuit_metrics hash inverse memory multiplication_reversal
+        partial_assert selector solver_budget solver_search synthesis)
+    bitreverse_executable(${suite}_tests tests/${suite}_tests.cpp)
+    bitreverse_test(${suite}_tests)
+endforeach()
+set_tests_properties(multiplication_reversal_tests PROPERTIES TIMEOUT 60)
+
+# The examples check their own results.
+bitreverse_test(partial_assert_crc32)
+bitreverse_test(partial_assert_md5)
+bitreverse_test(int_tracker_performance_regression COMMAND int_tracker_benchmark TIMEOUT 15 LABELS performance)
+
+# Runs tests/cmake/<script>.cmake against inverse_demo in a work directory of its own.
+function(bitreverse_cli_test name script)
+    bitreverse_test(${name} TIMEOUT 90 COMMAND ${CMAKE_COMMAND}
+        "-DINVERSE_DEMO=$<TARGET_FILE:inverse_demo>"
+        "-DCXX=${CMAKE_CXX_COMPILER}"
+        "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/${name}"
+        ${ARGN}
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cmake/${script}.cmake")
+endfunction()
+
+bitreverse_cli_test(synthesis_cpp_export synthesis_cli_test)
+bitreverse_cli_test(selector_cpp_export synthesis_cli_test -DMETHOD=synthesize-selector)
+bitreverse_cli_test(cegis_cpp_export cegis_cli_test)
+bitreverse_cli_test(inverse_cli_persistence inverse_cli_test)
+
+# The CLI tests compile exported headers with g++, which needs the MinGW
+# runtime DLLs on PATH.
+if(MINGW)
+    get_filename_component(mingw_bin "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    get_property(all_tests DIRECTORY PROPERTY TESTS)
+    set_tests_properties(${all_tests} PROPERTIES
+        ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:${mingw_bin}")
 endif()

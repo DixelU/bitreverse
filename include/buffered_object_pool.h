@@ -1,5 +1,3 @@
-#pragma once
-
 #ifndef DIXELU_BUFFERED_OBJECT_POOL_H
 #define DIXELU_BUFFERED_OBJECT_POOL_H
 
@@ -14,8 +12,8 @@ namespace details
 {
 
 // A stable-address slab allocator for the project's single-threaded ownership
-// model. Unlike buffered_queue_spsc, released objects need not arrive in FIFO
-// order: every vacant slot is linked into an intrusive free list.
+// model. Released objects may arrive in any order: every vacant slot is linked
+// into an intrusive free list. Slabs are only returned when the pool dies.
 template<typename T, std::size_t TargetSlabBytes = (1u << 20)>
 class buffered_object_pool
 {
@@ -44,7 +42,6 @@ class buffered_object_pool
 	slot* unused_end_ = nullptr;
 	std::size_t slab_count_ = 0;
 	std::size_t live_count_ = 0;
-	std::size_t high_watermark_ = 0;
 
 	void add_slab()
 	{
@@ -62,7 +59,6 @@ public:
 		std::size_t slabs;
 		std::size_t capacity;
 		std::size_t live;
-		std::size_t high_watermark;
 	};
 
 	buffered_object_pool() = default;
@@ -102,8 +98,6 @@ public:
 				reinterpret_cast<T*>(storage),
 				std::forward<Args>(args)...);
 			++live_count_;
-			if (live_count_ > high_watermark_)
-				high_watermark_ = live_count_;
 			return result;
 		}
 		catch (...)
@@ -129,8 +123,7 @@ public:
 		return {
 			.slabs = slab_count_,
 			.capacity = slab_count_ * slots_per_slab,
-			.live = live_count_,
-			.high_watermark = high_watermark_};
+			.live = live_count_};
 	}
 };
 

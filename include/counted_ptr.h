@@ -90,45 +90,22 @@ inline constinit counted_destruction_queue<T>
 
 } // namespace details
 
-template<typename T>
-struct enable_counted_from_this
-{
-	using t_type = std::remove_cvref_t<T>;
-
-	friend struct counted_ptr<t_type>;
-
-	counted_ptr<t_type> counted_from_this() const
-	{
-		if (!_ctrl || !_ctrl->_c)
-			return {};
-
-		++_ctrl->_c;
-		counted_ptr<t_type> result;
-		result._base = _ctrl;
-		return result;
-	}
-
-private:
-	void set_control_block(counted_control_block<t_type>* ctrl) const { _ctrl = ctrl; }
-	mutable counted_control_block<t_type>* _ctrl = nullptr;
-};
-
+// Single-threaded intrusive reference-counted pointer. Blocks come from a
+// per-type slab pool at runtime and from plain new/delete during constant
+// evaluation. Releasing a deep chain is iterative, never recursive.
 template<typename T>
 struct counted_ptr
 {
 	using t_type = std::remove_cvref_t<T>;
-	using self_type = counted_ptr<t_type>;
 
-	friend struct enable_counted_from_this<t_type>;
-
-	constexpr counted_ptr() : _base(nullptr) {};
+	constexpr counted_ptr() : _base(nullptr) {}
 	constexpr counted_ptr(counted_ptr&& p) noexcept :
 		_base(p._base)
 	{
 		p._base = nullptr;
 	}
 
-	constexpr counted_ptr(const counted_ptr& p):
+	constexpr counted_ptr(const counted_ptr& p) :
 		_base(p._base)
 	{
 		if (_base)
@@ -137,34 +114,15 @@ struct counted_ptr
 
 	constexpr ~counted_ptr() { destroy_(); }
 
-	constexpr counted_ptr& operator=(counted_ptr&& p) noexcept
+	// Copy-and-swap: the new pointee is held before the old one is released,
+	// so assigning from a pointer owned by the current pointee is safe.
+	constexpr counted_ptr& operator=(counted_ptr p) noexcept
 	{
-		if (this == &p)
-			return *this;
-
-		destroy_();
-
-		_base = p._base;
-		p._base = nullptr;
-
+		std::swap(_base, p._base);
 		return *this;
 	}
 
-	constexpr counted_ptr& operator=(const counted_ptr& p)
-	{
-		if (this == &p)
-			return *this;
-
-		destroy_();
-
-		_base = p._base;
-		if (_base)
-			++_base->_c;
-
-		return *this;
-	}
-
-	constexpr operator bool() const { return _base; }
+	constexpr explicit operator bool() const { return _base; }
 
 	constexpr t_type& operator*() { return _base->_p; }
 	constexpr const t_type& operator*() const { return _base->_p; }
@@ -177,59 +135,19 @@ struct counted_ptr
 
 	constexpr void reset() { destroy_(); }
 
-	[[nodiscard]] constexpr std::size_t count() const
-	{
-		if (_base)
-			return _base->_c;
-		return 0;
-	}
-
-	template<class... Args>
-	constexpr static self_type make_counted(Args&&... args)
-	{
-		self_type ptr;
-
-		if consteval
-		{
-			ptr._base = new counted_control_block<t_type>(
-				std::forward<Args>(args)...);
-		}
-		else
-		{
-			ptr._base =
-				details::counted_control_block_pool<t_type>().create(
-					std::forward<Args>(args)...);
-		}
-
-		assign_ctrl_block(ptr);
-		return ptr;
-	}
-
 	[[nodiscard]] constexpr const t_type* get() const { return _base ? &_base->_p : nullptr; }
 	[[nodiscard]] constexpr t_type* get() { return _base ? &_base->_p : nullptr; }
 
 private:
-	template<typename Q = t_type>
-	constexpr static
-	std::enable_if_t<std::is_base_of_v<enable_counted_from_this<Q>, Q>>
-	assign_ctrl_block(counted_ptr<Q>& ptr)
-	{
-		ptr->set_control_block(ptr._base);
-	}
-
-	template<typename Q = t_type>
-	constexpr static
-	std::enable_if_t<!std::is_base_of_v<enable_counted_from_this<Q>, Q>>
-	assign_ctrl_block(counted_ptr<Q>&) {}
+	template<typename U, typename... Args>
+	friend constexpr counted_ptr<U> make_counted(Args&&... args);
 
 	constexpr void destroy_()
 	{
 		if (!_base)
 			return;
 
-		auto count = --_base->_c;
-
-		if (!count)
+		if (!--_base->_c)
 		{
 			if consteval
 			{
@@ -237,23 +155,32 @@ private:
 			}
 			else
 			{
-				details::counted_destruction_queue_instance<t_type>.enqueue(
-					_base);
+				details::counted_destruction_queue_instance<t_type>.enqueue(_base);
 			}
 		}
 
 		_base = nullptr;
-
 	}
 
 	counted_control_block<t_type>* _base;
 };
 
-
-template<typename T, class... Args>
+template<typename T, typename... Args>
 constexpr counted_ptr<T> make_counted(Args&&... args)
 {
-	return counted_ptr<T>::make_counted(std::forward<Args>(args)...);
+	using value_type = typename counted_ptr<T>::t_type;
+
+	counted_ptr<T> ptr;
+	if consteval
+	{
+		ptr._base = new counted_control_block<value_type>(std::forward<Args>(args)...);
+	}
+	else
+	{
+		ptr._base = details::counted_control_block_pool<value_type>().create(
+			std::forward<Args>(args)...);
+	}
+	return ptr;
 }
 
 } // namespace dixelu

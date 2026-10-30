@@ -6,16 +6,17 @@
 #include <vector>
 
 #include "bitreverse.h"
+#include "hash_common.h"
 
 namespace dixelu::bitreverse::hash
 {
 
+// RFC 1321.
 template<template<size_t> typename integer>
 integer<128> md5(std::vector<integer<8>> message)
 {
-	using uint8 = integer<8>;
 	using uint32 = integer<32>;
-	using uint128 = integer<128>;
+	using detail::byte_order;
 
 	constexpr std::uint8_t shifts[64] = {
 		7, 12, 17, 22,  7, 12, 17, 22,  7, 12, 17, 22,  7, 12, 17, 22,
@@ -43,61 +44,16 @@ integer<128> md5(std::vector<integer<8>> message)
 		0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391
 	};
 
-	uint32 a0 = 0x67452301;
-	uint32 b0 = 0xefcdab89;
-	uint32 c0 = 0x98badcfe;
-	uint32 d0 = 0x10325476;
+	detail::pad(message, byte_order::little);
 
-	const std::uint64_t message_size_bits = message.size() * 8;
-	message.push_back(0x80);
-	while (message.size() % 64 != 56)
-		message.push_back(0);
-
-	// MD5 always stores its length as a little-endian 64-bit integer.
-	for (size_t byte = 0; byte < 8; ++byte)
-		message.push_back(
-			static_cast<std::uint8_t>(
-				message_size_bits >> (byte * 8)));
-
-	const auto combine_little_endian =
-		[](const uint8& a, const uint8& b, const uint8& c, const uint8& d)
-		{
-			return
-				uint32(a) |
-				(uint32(b) << 8) |
-				(uint32(c) << 16) |
-				(uint32(d) << 24);
-		};
-
-	const auto left_rotate = [](const uint32& value, size_t shift)
-	{
-		return (value << shift) | (value >> (32 - shift));
-	};
-
-	const auto reverse_endianness = [](const uint32& value)
-	{
-		return
-			((value & 0x000000FF) << 24) |
-			((value & 0x0000FF00) << 8) |
-			((value & 0x00FF0000) >> 8) |
-			((value & 0xFF000000) >> 24);
-	};
-
+	uint32 state[4] = {0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476};
 	for (size_t block = 0; block < message.size(); block += 64)
 	{
 		uint32 words[16];
-		for (size_t byte = 0; byte < 64; byte += 4)
-			words[byte / 4] = combine_little_endian(
-				message[block + byte],
-				message[block + byte + 1],
-				message[block + byte + 2],
-				message[block + byte + 3]);
+		for (size_t word = 0; word < 16; ++word)
+			words[word] = detail::load_word(message, block + word * 4, byte_order::little);
 
-		uint32 a = a0;
-		uint32 b = b0;
-		uint32 c = c0;
-		uint32 d = d0;
-
+		uint32 a = state[0], b = state[1], c = state[2], d = state[3];
 		for (size_t round = 0; round < 64; ++round)
 		{
 			uint32 function;
@@ -131,20 +87,16 @@ integer<128> md5(std::vector<integer<8>> message)
 			a = d;
 			d = c;
 			c = b;
-			b += left_rotate(function, shifts[round]);
+			b += detail::rotl(function, shifts[round]);
 		}
 
-		a0 += a;
-		b0 += b;
-		c0 += c;
-		d0 += d;
+		state[0] += a;
+		state[1] += b;
+		state[2] += c;
+		state[3] += d;
 	}
 
-	return
-		(uint128(reverse_endianness(a0)) << 96) |
-		(uint128(reverse_endianness(b0)) << 64) |
-		(uint128(reverse_endianness(c0)) << 32) |
-		uint128(reverse_endianness(d0));
+	return detail::pack_digest(state, byte_order::little);
 }
 
 } // namespace dixelu::bitreverse::hash

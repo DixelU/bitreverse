@@ -1,17 +1,25 @@
 #ifndef DIXELU_BITREVERSE_INVERSE_H
 #define DIXELU_BITREVERSE_INVERSE_H
 
-#include <charconv>
+#include <array>
+#include <chrono>
+#include <functional>
 #include <istream>
+#include <limits>
+#include <optional>
 #include <ostream>
 #include <streambuf>
-#include <tuple>
+#include <string_view>
+#include <type_traits>
+#include <variant>
 
 #include "bitreverse.h"
 #include "inverse/affine_plan.h"
 #include "inverse/synthesized_plan.h"
 #include "inverse/selector_plan.h"
 #include "inverse/cegis_plan.h"
+#include "inverse/node_interner.h"
+#include "inverse/text_io.h"
 
 namespace dixelu::bitreverse::inversion
 {
@@ -40,20 +48,22 @@ bits bits_of(const std::vector<int_tracker<N>>& value)
 // Known algorithm parameters must be concrete before constructing the expression.
 class program
 {
-
 	using core = collision_resolution::solver_core::compiled_circuit;
 	using pointer = counted_ptr<dixelu::bitreverse::details::bitstate>;
 	using node = dixelu::bitreverse::details::bitstate;
+	using reader = detail::text_reader<std::invalid_argument>;
+	// At most one direct inverse is active; monostate answers queries by search.
+	using backend = std::variant<std::monostate, detail::affine_plan,
+		detail::synthesized_plan, detail::selector_plan, detail::cegis_plan>;
+	// Saved backend markers, in variant order.
+	static constexpr std::array<std::string_view, std::variant_size_v<backend>> backend_names{
+		"SEARCH", "AFFINE", "SYNTHESIZED", "SELECTOR", "LEARNED"};
 	static constexpr size_t none = collision_resolution::solver_core::no_node;
-	static constexpr size_t file_limit = 1'000'000;
 
 	std::shared_ptr<const core> circuit_;
 	std::vector<size_t> inputs_, outputs_, requirements_, variables_;
 	std::vector<size_t> input_columns_;
-	std::optional<detail::affine_plan> affine_;
-	std::optional<detail::synthesized_plan> synthesized_;
-	std::optional<detail::selector_plan> selected_;
-	std::optional<detail::cegis_plan> learned_;
+	backend backend_;
 
 	program() = default;
 
@@ -69,9 +79,7 @@ class program
 	{
 		std::unordered_map<const node*, pointer> copies;
 		std::unordered_map<const node*, unsigned char> color;
-		std::unordered_map<const node*, size_t> canonical_ids;
-		using key = std::tuple<char, bool, size_t, size_t>;
-		std::map<key, pointer> interned;
+		detail::node_interner interned;
 		std::vector<pointer> result;
 		for (const auto& root : roots)
 		{
@@ -112,27 +120,15 @@ class program
 
 				pointer lhs = arity > 0 ? copies.at(source->_1.get()) : pointer{};
 				pointer rhs = arity > 1 ? copies.at(source->_2.get()) : pointer{};
-				if (arity == 2 && canonical_ids.at(lhs.get()) > canonical_ids.at(rhs.get()))
+				if (arity == 2 && interned.identity(lhs) > interned.identity(rhs))
 					std::swap(lhs, rhs);
-				pointer copy = dixelu::bitreverse::details::make_bitstate_operation(
-					static_cast<std::uint8_t>(operation) |
-						(operation == '=' && source->state ? 0x80 : 0), lhs, rhs);
-				if (!canonical_ids.contains(copy.get()))
-				{
-					// Unknowns retain identity, even though they share an opcode.
-					if (copy->operation != '*')
-					{
-						const key signature{
-							static_cast<char>(copy->operation), static_cast<bool>(copy->state),
-							copy->_1 ? canonical_ids.at(copy->_1.get()) : none,
-							copy->_2 ? canonical_ids.at(copy->_2.get()) : none};
-						auto [entry, inserted] = interned.emplace(signature, copy);
-						if (!inserted)
-							copy = entry->second;
-					}
-					if (!canonical_ids.contains(copy.get()))
-						canonical_ids.emplace(copy.get(), canonical_ids.size());
-				}
+				pointer copy = operation == '='
+					? dixelu::bitreverse::details::make_boolean_constant(source->state)
+					: dixelu::bitreverse::details::make_bitstate_operation(operation, lhs, rhs);
+				if (auto existing = interned.find(copy))
+					copy = std::move(existing);
+				else
+					interned.insert(copy);
 				copies.emplace(source.get(), std::move(copy));
 				color[source.get()] = 2;
 			}
@@ -144,8 +140,7 @@ class program
 	void set_ports(const std::vector<pointer>& roots,
 		size_t input_size, size_t output_size)
 	{
-		auto compiled = std::make_shared<core>(roots);
-		circuit_ = compiled;
+		circuit_ = std::make_shared<core>(roots);
 		for (size_t i = 0; i < roots.size(); ++i)
 		{
 			const size_t id = circuit_->node_ids.at(roots[i].get());
@@ -188,45 +183,97 @@ class program
 		return result;
 	}
 
+	std::optional<values> complete(const std::optional<values>& assignment) const
+	{
+		if (!assignment)
+			return std::nullopt;
+		return full_input(*assignment);
+	}
+
+	// The affine plan solves requirements as extra outputs that must be true.
+	values affine_target(const values& target) const
+	{
+		values bound = target;
+		bound.insert(bound.end(), requirements_.size(), true);
+		return bound;
+	}
+
 	void check_target(const values& target) const
 	{
 		if (target.size() != output_count())
 			throw std::invalid_argument("inverse target has the wrong bit width");
 	}
 
-	static size_t read_size(std::istream& stream, size_t maximum = file_limit)
+	// The active plan, or logic_error naming the backend a query needs.
+	template<class Plan>
+	const Plan& require() const
 	{
-		stream >> std::ws;
-		size_t value = 0;
-		size_t digits = 0;
-		while (stream.peek() >= '0' && stream.peek() <= '9')
+		if (const auto* plan = std::get_if<Plan>(&backend_))
+			return *plan;
+		if constexpr (std::is_same_v<Plan, detail::affine_plan>)
+			throw std::logic_error("free-bit parameterization requires a direct affine inverse");
+		else if constexpr (std::is_same_v<Plan, detail::synthesized_plan>)
+			throw std::logic_error("program has no synthesized inverse");
+		else if constexpr (std::is_same_v<Plan, detail::selector_plan>)
+			throw std::logic_error("program has no compiled selector");
+		else
+			throw std::logic_error("program has no learned inverse");
+	}
+
+	// A copy of this program that answers queries with plan.
+	template<class Plan>
+	program with_backend(Plan plan) const
+	{
+		program result = *this;
+		result.backend_ = std::move(plan);
+		return result;
+	}
+
+	// Enumerates unknown assignments with the active direct backend.
+	size_t enumerate(const values& target,
+		const std::function<bool(const values&)>& emit, size_t maximum) const
+	{
+		return std::visit([&]<class Plan>(const Plan& plan) -> size_t
 		{
-			const size_t digit = static_cast<size_t>(stream.get() - '0');
-			if (++digits > 20 || digit > maximum || value > (maximum - digit) / 10)
-				throw std::invalid_argument("inverse artifact integer exceeds its limit");
-			value = value * 10 + digit;
-		}
-		const int next = stream.peek();
-		if (!digits || (next != std::char_traits<char>::eof() &&
-			next != ' ' && next != '\t' && next != '\r' && next != '\n' &&
-			next != '\f' && next != '\v'))
-			throw std::invalid_argument("invalid inverse artifact integer");
-		return value;
+			if constexpr (std::is_same_v<Plan, std::monostate>)
+				throw std::logic_error("nonlinear inverse requires search");
+			else if constexpr (std::is_same_v<Plan, detail::affine_plan>)
+				return plan.enumerate(affine_target(target), emit, maximum);
+			else
+				return plan.enumerate(target, emit, maximum);
+		}, backend_);
 	}
 
-	static void write_size(std::ostream& stream, std::uint64_t value)
+	// The node count a direct query reports: the structure it traverses.
+	size_t query_node_count() const
 	{
-		char buffer[20];
-		const auto written = std::to_chars(buffer, buffer + sizeof(buffer), value);
-		stream.write(buffer, written.ptr - buffer);
-		stream.put(' ');
+		if (const auto* plan = std::get_if<detail::selector_plan>(&backend_))
+			return plan->node_count() + plan->forward_node_count();
+		if (const auto* plan = std::get_if<detail::synthesized_plan>(&backend_))
+			return plan->node_count();
+		return node_count();
 	}
 
-	static void expect(std::istream& stream, const char* expected)
+	size_t search(const values& target, const std::function<bool(const values&)>& callback,
+		size_t max_solutions, const solver_options& options, solver_statistics* statistics) const
 	{
-		std::string token;
-		if (!(stream >> token) || token != expected)
-			throw std::invalid_argument("invalid inverse artifact marker");
+		std::vector<std::pair<size_t, bool>> bindings;
+		for (size_t bit = 0; bit < target.size(); ++bit)
+			bindings.emplace_back(outputs_[bit], target[bit]);
+		for (const size_t id : requirements_)
+			bindings.emplace_back(id, true);
+		size_t count = 0;
+		return collision_resolution::solve_compiled_stream(circuit_, bindings,
+			[&](const collision_resolution::solution& solution)
+			{
+				values assignment;
+				assignment.reserve(variables_.size());
+				for (const size_t id : variables_)
+					assignment.push_back(solution.assignments.at(circuit_->nodes[id]));
+				++count;
+				return callback(full_input(assignment)) &&
+					(!max_solutions || count < max_solutions);
+			}, options, statistics);
 	}
 
 public:
@@ -240,8 +287,8 @@ public:
 		result.set_ports(specialize(roots), inputs.size(), outputs.size());
 		auto all_outputs = result.outputs_;
 		all_outputs.insert(all_outputs.end(), result.requirements_.begin(), result.requirements_.end());
-		result.affine_ = detail::affine_plan::compile(
-			*result.circuit_, all_outputs, result.variables_);
+		if (auto affine = detail::affine_plan::compile(*result.circuit_, all_outputs, result.variables_))
+			result.backend_ = std::move(*affine);
 		return result;
 	}
 
@@ -249,46 +296,18 @@ public:
 	size_t output_count() const { return outputs_.size(); }
 	size_t unknown_count() const { return variables_.size(); }
 	size_t node_count() const { return circuit_->nodes.size(); }
-	bool is_affine() const { return affine_.has_value(); }
-	bool is_synthesized() const { return synthesized_.has_value(); }
-	bool is_selected() const { return selected_.has_value(); }
-	bool is_learned() const { return learned_.has_value(); }
+	bool is_affine() const { return std::holds_alternative<detail::affine_plan>(backend_); }
+	bool is_synthesized() const { return std::holds_alternative<detail::synthesized_plan>(backend_); }
+	bool is_selected() const { return std::holds_alternative<detail::selector_plan>(backend_); }
+	bool is_learned() const { return std::holds_alternative<detail::cegis_plan>(backend_); }
 
-	// Learn a polynomial selector from counterexamples, then certify it with
-	// the relational UNSAT miter. No incomplete candidate is returned.
-	program learned(const cegis_options& options = {}, cegis_statistics* statistics = nullptr) const
-	{
-		auto plan = detail::cegis_plan::compile(
-			*circuit_, outputs_, variables_, requirements_, options, statistics);
-		program result = *this;
-		result.learned_ = std::move(plan);
-		result.affine_.reset(); result.synthesized_.reset(); result.selected_.reset();
-		return result;
-	}
-	size_t learned_term_count() const
-	{
-		if (!learned_) throw std::logic_error("program has no learned inverse");
-		return learned_->term_count();
-	}
-	size_t learned_coefficient_count() const
-	{
-		if (!learned_) throw std::logic_error("program has no learned inverse");
-		return learned_->coefficient_count();
-	}
-
-	// All expensive reasoning occurs here. Failure leaves this program intact.
-	// Explicit synthesis never silently falls back to query-time search.
+	// All expensive reasoning happens in these builders, and failure leaves
+	// this program intact. Explicit synthesis never falls back to search.
 	program synthesized(const synthesis_options& options = {},
 		synthesis_statistics* statistics = nullptr) const
 	{
-		auto plan = detail::synthesized_plan::compile(
-			*circuit_, outputs_, variables_, requirements_, options, statistics);
-		program result = *this;
-		result.synthesized_ = std::move(plan);
-		result.affine_.reset();
-		result.selected_.reset();
-		result.learned_.reset();
-		return result;
+		return with_backend(detail::synthesized_plan::compile(
+			*circuit_, outputs_, variables_, requirements_, options, statistics));
 	}
 
 	// Exhaustively compile the bounded input domain into a selector tree.
@@ -296,126 +315,71 @@ public:
 	program selected(const selector_options& options = {},
 		selector_statistics* statistics = nullptr) const
 	{
-		auto plan = detail::selector_plan::compile(
-			*circuit_, outputs_, variables_, requirements_, options, statistics);
-		program result = *this;
-		result.selected_ = std::move(plan);
-		result.affine_.reset();
-		result.synthesized_.reset();
-		result.learned_.reset();
-		return result;
+		return with_backend(detail::selector_plan::compile(
+			*circuit_, outputs_, variables_, requirements_, options, statistics));
 	}
 
-	size_t selector_node_count() const
+	// Learn a polynomial selector from counterexamples, then certify it with
+	// the relational UNSAT miter. No incomplete candidate is returned.
+	program learned(const cegis_options& options = {}, cegis_statistics* statistics = nullptr) const
 	{
-		if (!selected_) throw std::logic_error("program has no compiled selector");
-		return selected_->node_count();
-	}
-	size_t selector_leaf_count() const
-	{
-		if (!selected_) throw std::logic_error("program has no compiled selector");
-		return selected_->leaf_count();
-	}
-	size_t selector_assignment_count() const
-	{
-		if (!selected_) throw std::logic_error("program has no compiled selector");
-		return selected_->assignment_count();
-	}
-	size_t selector_forward_node_count() const
-	{
-		if (!selected_) throw std::logic_error("program has no compiled selector");
-		return selected_->forward_node_count();
+		return with_backend(detail::cegis_plan::compile(
+			*circuit_, outputs_, variables_, requirements_, options, statistics));
 	}
 
-	size_t synthesized_node_count() const
-	{
-		if (!synthesized_)
-			throw std::logic_error("program has no synthesized inverse");
-		return synthesized_->node_count();
-	}
+	size_t synthesized_node_count() const { return require<detail::synthesized_plan>().node_count(); }
+	size_t synthesized_relation_node_count() const { return require<detail::synthesized_plan>().relation_node_count(); }
+	size_t synthesized_function_node_count() const { return require<detail::synthesized_plan>().function_node_count(); }
+	size_t synthesized_selector_node_count() const { return require<detail::synthesized_plan>().selector_node_count(); }
+	size_t synthesized_validity_node_count() const { return require<detail::synthesized_plan>().validity_node_count(); }
 
-	size_t synthesized_relation_node_count() const
-	{
-		if (!synthesized_)
-			throw std::logic_error("program has no synthesized inverse");
-		return synthesized_->relation_node_count();
-	}
+	size_t selector_node_count() const { return require<detail::selector_plan>().node_count(); }
+	size_t selector_leaf_count() const { return require<detail::selector_plan>().leaf_count(); }
+	size_t selector_assignment_count() const { return require<detail::selector_plan>().assignment_count(); }
+	size_t selector_forward_node_count() const { return require<detail::selector_plan>().forward_node_count(); }
 
-	size_t synthesized_function_node_count() const
-	{
-		if (!synthesized_)
-			throw std::logic_error("program has no synthesized inverse");
-		return synthesized_->function_node_count();
-	}
+	size_t learned_term_count() const { return require<detail::cegis_plan>().term_count(); }
+	size_t learned_coefficient_count() const { return require<detail::cegis_plan>().coefficient_count(); }
 
-	size_t synthesized_selector_node_count() const
-	{
-		if (!synthesized_)
-			throw std::logic_error("program has no synthesized inverse");
-		return synthesized_->selector_node_count();
-	}
+	size_t free_bit_count() const { return require<detail::affine_plan>().free_bit_count(); }
 
-	size_t synthesized_validity_node_count() const
-	{
-		if (!synthesized_)
-			throw std::logic_error("program has no synthesized inverse");
-		return synthesized_->validity_node_count();
-	}
-
-	// Emits only the canonical inverse and its validity check. The generated
-	// header has no dependency on tracking, decision-diagram construction, or SAT.
+	// Writes a standalone header defining bitreverse_inverse(target) for a
+	// synthesized, selector, or learned inverse. It needs only the standard
+	// library: no tracking, decision-diagram construction, or SAT.
 	void export_cpp(std::ostream& stream) const
 	{
-		if (!synthesized_ && !selected_ && !learned_)
-			throw std::logic_error("synthesize the inverse before exporting C++");
 		values constants;
 		constants.reserve(inputs_.size());
 		for (const size_t id : inputs_)
 			constants.push_back(circuit_->nodes[id]->state != 0);
-		if (learned_) learned_->export_cpp(stream, input_columns_, constants);
-		else if (selected_) selected_->export_cpp(stream, input_columns_, constants);
-		else synthesized_->export_cpp(stream, input_columns_, constants);
-	}
-
-	size_t free_bit_count() const
-	{
-		if (!affine_)
-			throw std::logic_error("free-bit parameterization requires a direct affine inverse");
-		return affine_->free_bit_count();
+		const detail::cpp_signature signature{input_columns_, constants, unknown_count(), output_count()};
+		std::visit([&]<class Plan>(const Plan& plan)
+		{
+			if constexpr (requires { plan.export_cpp(stream, signature); })
+				plan.export_cpp(stream, signature);
+			else
+				throw std::logic_error("synthesize the inverse before exporting C++");
+		}, backend_);
+		if (!stream)
+			throw std::runtime_error("could not export C++ inverse");
 	}
 
 	std::optional<values> evaluate(const values& target, const values& free_bits) const
 	{
 		check_target(target);
-		if (learned_)
+		return complete(std::visit([&]<class Plan>(const Plan& plan) -> std::optional<values>
 		{
-			if (!free_bits.empty()) throw std::invalid_argument("learned inverse selects one input without free bits");
-			const auto assignment = learned_->evaluate(target);
-			return assignment ? std::optional<values>(full_input(*assignment)) : std::nullopt;
-		}
-		if (selected_)
-		{
-			if (!free_bits.empty())
-				throw std::invalid_argument("selector evaluate selects one input; use solve to enumerate");
-			return evaluate_selected(target);
-		}
-		if (synthesized_)
-		{
-			if (!free_bits.empty())
-				throw std::invalid_argument("synthesized evaluate selects one input; use solve to enumerate");
-			const auto assignment = synthesized_->evaluate(target);
-			if (!assignment)
-				return std::nullopt;
-			return full_input(*assignment);
-		}
-		if (!affine_)
-			throw std::logic_error("nonlinear inverse requires search");
-		values bound = target;
-		bound.insert(bound.end(), requirements_.size(), true);
-		auto assignment = affine_->evaluate(bound, free_bits);
-		if (!assignment)
-			return std::nullopt;
-		return full_input(*assignment);
+			if constexpr (std::is_same_v<Plan, std::monostate>)
+				throw std::logic_error("nonlinear inverse requires search");
+			else if constexpr (std::is_same_v<Plan, detail::affine_plan>)
+				return plan.evaluate(affine_target(target), free_bits);
+			else
+			{
+				if (!free_bits.empty())
+					throw std::invalid_argument("nonlinear inverse selects one input and takes no free bits");
+				return plan.evaluate(target);
+			}
+		}, backend_));
 	}
 
 	// Selector queries report tree visits and the single forward verification pass.
@@ -424,10 +388,7 @@ public:
 	{
 		if (statistics) *statistics = {};
 		check_target(target);
-		if (!selected_) throw std::logic_error("selector evaluation requires a compiled selector");
-		const auto assignment = selected_->evaluate(target, statistics);
-		if (!assignment) return std::nullopt;
-		return full_input(*assignment);
+		return complete(require<detail::selector_plan>().evaluate(target, statistics));
 	}
 
 	std::optional<values> evaluate_profiled(const values& target,
@@ -435,10 +396,7 @@ public:
 	{
 		if (statistics) *statistics = {};
 		check_target(target);
-		if (!synthesized_) throw std::logic_error("evaluation profiling requires a synthesized inverse");
-		const auto assignment = synthesized_->evaluate(target, statistics);
-		if (!assignment) return std::nullopt;
-		return full_input(*assignment);
+		return complete(require<detail::synthesized_plan>().evaluate(target, statistics));
 	}
 
 	std::optional<values> evaluate_schedule(const values& target,
@@ -446,14 +404,11 @@ public:
 	{
 		if (statistics) *statistics = {};
 		check_target(target);
-		if (!synthesized_) throw std::logic_error("schedule evaluation requires a synthesized inverse");
-		const auto assignment = synthesized_->evaluate_schedule(target, statistics);
-		if (!assignment) return std::nullopt;
-		return full_input(*assignment);
+		return complete(require<detail::synthesized_plan>().evaluate_schedule(target, statistics));
 	}
 
 	// Zero max_solutions means exhaustive enumeration. Returning false stops early.
-	// Unlike assert_equality, an impossible target returns zero, not an exception.
+	// An impossible target returns zero, not an exception.
 	size_t solve(const values& target,
 		const std::function<bool(const values&)>& callback,
 		size_t max_solutions = 1, const solver_options& options = {},
@@ -462,149 +417,58 @@ public:
 		check_target(target);
 		if (!callback)
 			throw std::invalid_argument("inverse requires a solution callback");
-		if (learned_)
+		if (std::holds_alternative<std::monostate>(backend_))
+			return search(target, callback, max_solutions, options, statistics);
+		if (is_learned() && max_solutions != 1)
+			throw std::logic_error("learned inverse provides one witness; enumeration requires another backend");
+		const auto started = std::chrono::steady_clock::now();
+		if (statistics)
 		{
-			if (max_solutions != 1)
-				throw std::logic_error("learned inverse provides one witness; enumeration requires another backend");
-			const auto started = std::chrono::steady_clock::now();
-			if (statistics) statistics->reset();
-			const auto solution = evaluate(target, {});
-			if (solution) callback(*solution);
-			if (statistics)
-			{
-				statistics->nodes = node_count(); statistics->variables = unknown_count();
-				statistics->solutions = solution.has_value();
-				statistics->elapsed = std::chrono::steady_clock::now() - started;
-			}
-			return solution.has_value();
+			statistics->reset();
+			statistics->nodes = query_node_count();
+			statistics->variables = unknown_count();
+			statistics->affine_enabled = is_affine();
 		}
-		if (selected_)
+		const size_t count = enumerate(target,
+			[&](const values& assignment) { return callback(full_input(assignment)); }, max_solutions);
+		if (statistics)
 		{
-			const auto started = std::chrono::steady_clock::now();
-			if (statistics)
-			{
-				statistics->reset();
-				statistics->nodes = selected_->node_count() + selected_->forward_node_count();
-				statistics->variables = unknown_count();
-			}
-			const size_t count = selected_->enumerate(target,
-				[&](const values& assignment) { return callback(full_input(assignment)); }, max_solutions);
-			if (statistics)
-			{
-				statistics->solutions = count;
-				statistics->elapsed = std::chrono::steady_clock::now() - started;
-			}
-			return count;
+			statistics->solutions = count;
+			statistics->elapsed = std::chrono::steady_clock::now() - started;
 		}
-		if (synthesized_)
-		{
-			const auto started = std::chrono::steady_clock::now();
-			if (statistics)
-			{
-				statistics->reset();
-				statistics->nodes = synthesized_->node_count();
-				statistics->variables = unknown_count();
-			}
-			const size_t count = synthesized_->enumerate(target,
-				[&](const values& assignment) { return callback(full_input(assignment)); },
-				max_solutions);
-			if (statistics)
-			{
-				statistics->solutions = count;
-				statistics->elapsed = std::chrono::steady_clock::now() - started;
-			}
-			return count;
-		}
-		if (affine_)
-		{
-			const auto started = std::chrono::steady_clock::now();
-			if (statistics)
-			{
-				statistics->reset();
-				statistics->nodes = node_count();
-				statistics->variables = unknown_count();
-				statistics->affine_enabled = true;
-			}
-			size_t count = 0;
-			values free_bits(free_bit_count(), false);
-			while (true)
-			{
-				const auto solution = evaluate(target, free_bits);
-				if (!solution)
-					break;
-				++count;
-				if (!callback(*solution) || (max_solutions && count >= max_solutions))
-					break;
-				size_t bit = 0;
-				while (bit < free_bits.size() && free_bits[bit])
-					free_bits[bit++] = false;
-				if (bit == free_bits.size())
-					break;
-				free_bits[bit] = true;
-			}
-			if (statistics)
-			{
-				statistics->solutions = count;
-				statistics->elapsed = std::chrono::steady_clock::now() - started;
-			}
-			return count;
-		}
-
-		std::vector<std::pair<size_t, bool>> bindings;
-		for (size_t bit = 0; bit < target.size(); ++bit)
-			bindings.emplace_back(outputs_[bit], target[bit]);
-		for (const size_t id : requirements_)
-			bindings.emplace_back(id, true);
-		size_t count = 0;
-		return collision_resolution::solve_compiled_stream(circuit_, bindings,
-			[&](const collision_resolution::crs_state& solution)
-			{
-				values assignment;
-				assignment.reserve(variables_.size());
-				for (const size_t id : variables_)
-					assignment.push_back(solution.assignments.at(circuit_->nodes[id]));
-				++count;
-				return callback(full_input(assignment)) &&
-					(!max_solutions || count < max_solutions);
-			}, options, statistics);
+		return count;
 	}
 
 private:
 	void write_payload(std::ostream& stream) const
 	{
-		if (node_count() > file_limit || input_count() > file_limit ||
-			output_count() > file_limit || requirements_.size() > file_limit ||
-			input_count() + output_count() + requirements_.size() > file_limit)
+		const size_t port_count = input_count() + output_count() + requirements_.size();
+		if (node_count() > detail::artifact_node_limit || port_count > detail::artifact_node_limit)
 			throw std::length_error("inverse artifact exceeds format limits");
 		stream << "BITREVERSE_INVERSE 1\n";
-		for (const size_t count : {node_count(), input_count(), output_count(), requirements_.size()})
-			write_size(stream, count);
+		detail::write_fields(stream, {node_count(), input_count(), output_count(), requirements_.size()});
 		stream.put('\n');
 		for (size_t id = 0; id < node_count(); ++id)
 		{
 			const auto& current = circuit_->nodes[id];
 			stream.put(static_cast<char>(current->operation));
 			stream.put(' ');
-			write_size(stream, current->state);
+			stream << detail::decimal(current->state) << ' ';
 			for (const size_t child : circuit_->inputs[id])
-				write_size(stream, child == none ? node_count() : child);
+				stream << detail::decimal(child == none ? node_count() : child) << ' ';
 			stream.put('\n');
 		}
 		for (const auto* ports : {&inputs_, &outputs_, &requirements_})
 		{
-			for (const size_t id : *ports)
-				write_size(stream, id);
+			detail::write_fields(stream, *ports);
 			stream.put('\n');
 		}
-		stream << (learned_ ? "LEARNED\n" : selected_ ? "SELECTOR\n" : synthesized_ ? "SYNTHESIZED\n" : affine_ ? "AFFINE\n" : "SEARCH\n");
-		if (learned_)
-			learned_->save(stream);
-		else if (selected_)
-			selected_->save(stream);
-		else if (synthesized_)
-			synthesized_->save(stream);
-		else if (affine_)
-			affine_->save(stream);
+		stream << backend_names[backend_.index()] << '\n';
+		std::visit([&]<class Plan>(const Plan& plan)
+		{
+			if constexpr (!std::is_same_v<Plan, std::monostate>)
+				plan.save(stream);
+		}, backend_);
 		if (!stream)
 			throw std::runtime_error("could not write inverse artifact");
 	}
@@ -637,39 +501,24 @@ private:
 		return buffer.hash;
 	}
 
-public:
-	void save(std::ostream& stream) const
+	struct record
 	{
-		write_payload(stream);
-		stream << "CHECKSUM ";
-		write_size(stream, checksum());
-		stream << "\nEND_INVERSE\n";
-		if (!stream)
-			throw std::runtime_error("could not write inverse artifact");
-	}
+		char operation;
+		bool state;
+		std::array<size_t, 2> children;
+	};
 
-	static program load(std::istream& stream)
+	// Gate records; a child index equal to count marks an absent operand.
+	static std::vector<record> read_records(reader& input, size_t count)
 	{
-		expect(stream, "BITREVERSE_INVERSE");
-		if (read_size(stream) != 1)
-			throw std::invalid_argument("unsupported inverse artifact version");
-		const size_t count = read_size(stream);
-		const size_t input_size = read_size(stream);
-		const size_t output_size = read_size(stream);
-		const size_t requirement_size = read_size(stream);
-		const size_t port_count = input_size + output_size + requirement_size;
-		if (port_count > file_limit)
-			throw std::invalid_argument("too many inverse ports");
-		struct record { char operation; bool state; std::array<size_t, 2> children; };
 		std::vector<record> records;
 		records.reserve(count);
 		for (size_t id = 0; id < count; ++id)
 		{
-			std::string operation;
-			if (!(stream >> operation) || operation.size() != 1 || !valid_operation(operation[0]))
+			const auto operation = input.token();
+			if (operation.size() != 1 || !valid_operation(operation[0]))
 				throw std::invalid_argument("invalid inverse gate");
-			record current{operation[0], read_size(stream, 1) != 0,
-				{read_size(stream, count), read_size(stream, count)}};
+			record current{operation[0], input.number(1) != 0, {input.number(count), input.number(count)}};
 			const size_t arity = dixelu::bitreverse::details::operation_args_count[
 				static_cast<unsigned char>(current.operation)];
 			if (current.operation != '=' && current.state)
@@ -679,15 +528,13 @@ public:
 					throw std::invalid_argument("invalid inverse gate arity");
 			records.push_back(current);
 		}
-		std::vector<size_t> ports;
-		for (size_t i = 0; i < port_count; ++i)
-		{
-			if (!count)
-				throw std::invalid_argument("inverse port has no node");
-			ports.push_back(read_size(stream, count - 1));
-		}
+		return records;
+	}
 
-		// Validate acyclicity before connecting reference-counted objects.
+	// Validates acyclicity before connecting reference-counted objects.
+	static void check_acyclic(const std::vector<record>& records)
+	{
+		const size_t count = records.size();
 		std::vector<unsigned char> color(count, 0);
 		for (size_t root = 0; root < count; ++root)
 		{
@@ -712,6 +559,10 @@ public:
 						pending.emplace_back(child, false);
 			}
 		}
+	}
+
+	static std::vector<pointer> connect(const std::vector<record>& records)
+	{
 		std::vector<pointer> nodes;
 		for (const auto& current : records)
 		{
@@ -720,13 +571,38 @@ public:
 			value->state = current.state;
 			nodes.push_back(std::move(value));
 		}
-		for (size_t id = 0; id < count; ++id)
+		for (size_t id = 0; id < records.size(); ++id)
 		{
-			if (records[id].children[0] < count)
+			if (records[id].children[0] < records.size())
 				nodes[id]->_1 = nodes[records[id].children[0]];
-			if (records[id].children[1] < count)
+			if (records[id].children[1] < records.size())
 				nodes[id]->_2 = nodes[records[id].children[1]];
 		}
+		return nodes;
+	}
+
+	static program read_circuit(reader& input)
+	{
+		input.expect("BITREVERSE_INVERSE");
+		if (input.number(detail::artifact_node_limit) != 1)
+			throw std::invalid_argument("unsupported inverse artifact version");
+		const size_t count = input.number(detail::artifact_node_limit);
+		const size_t input_size = input.number(detail::artifact_node_limit);
+		const size_t output_size = input.number(detail::artifact_node_limit);
+		const size_t requirement_size = input.number(detail::artifact_node_limit);
+		const size_t port_count = input_size + output_size + requirement_size;
+		if (port_count > detail::artifact_node_limit)
+			throw std::invalid_argument("too many inverse ports");
+		const auto records = read_records(input, count);
+		std::vector<size_t> ports;
+		for (size_t i = 0; i < port_count; ++i)
+		{
+			if (!count)
+				throw std::invalid_argument("inverse port has no node");
+			ports.push_back(input.number(count - 1));
+		}
+		check_acyclic(records);
+		const auto nodes = connect(records);
 		std::vector<pointer> roots;
 		for (const size_t id : ports)
 			roots.push_back(nodes[id]);
@@ -734,47 +610,55 @@ public:
 		result.set_ports(roots, input_size, output_size);
 		if (result.node_count() != count)
 			throw std::invalid_argument("inverse artifact contains unreachable nodes");
-		std::string backend;
-		if (!(stream >> backend))
-			throw std::invalid_argument("missing inverse backend");
-		if (backend == "LEARNED")
-			result.learned_ = detail::cegis_plan::load(stream,
-				*result.circuit_, result.outputs_, result.variables_, result.requirements_);
-		else if (backend == "SELECTOR")
+		return result;
+	}
+
+	void read_backend(reader& input, std::istream& stream)
+	{
+		const auto name = input.token();
+		if (name == "LEARNED")
+			backend_ = detail::cegis_plan::load(stream, *circuit_, outputs_, variables_, requirements_);
+		else if (name == "SELECTOR")
+			backend_ = detail::selector_plan::load(stream, *circuit_, outputs_, variables_, requirements_);
+		else if (name == "SYNTHESIZED")
 		{
-			result.selected_ = detail::selector_plan::load(stream,
-				*result.circuit_, result.outputs_, result.variables_, result.requirements_);
-			if (result.selected_->input_count() != result.unknown_count() ||
-				result.selected_->output_count() != output_size)
-				throw std::invalid_argument("selector dimensions do not match its ports");
-		}
-		else if (backend == "SYNTHESIZED")
-		{
-			result.synthesized_ = detail::synthesized_plan::load(stream);
-			if (result.synthesized_->input_count() != result.unknown_count() ||
-				result.synthesized_->output_count() != output_size)
+			auto plan = detail::synthesized_plan::load(stream);
+			if (plan.input_count() != unknown_count() || plan.output_count() != output_count())
 				throw std::invalid_argument("synthesized dimensions do not match its ports");
+			backend_ = std::move(plan);
 		}
-		else if (backend == "AFFINE")
+		else if (name == "AFFINE")
 		{
-			result.affine_ = detail::affine_plan::load(stream);
-			if (result.affine_->input_count() != result.unknown_count() ||
-				result.affine_->output_count() != output_size + requirement_size)
+			auto plan = detail::affine_plan::load(stream);
+			if (plan.input_count() != unknown_count() ||
+				plan.output_count() != output_count() + requirements_.size())
 				throw std::invalid_argument("inverse affine dimensions do not match its ports");
+			backend_ = std::move(plan);
 		}
-		else if (backend != "SEARCH")
+		else if (name.empty())
+			throw std::invalid_argument("missing inverse backend");
+		else if (name != "SEARCH")
 			throw std::invalid_argument("unknown inverse backend");
-		expect(stream, "CHECKSUM");
-		std::string checksum_token;
-		stream >> checksum_token;
-		std::uint64_t saved_checksum = 0;
-		const auto parsed = std::from_chars(checksum_token.data(),
-			checksum_token.data() + checksum_token.size(), saved_checksum);
-		if (checksum_token.size() > 20 || parsed.ec != std::errc{} ||
-			parsed.ptr != checksum_token.data() + checksum_token.size() ||
-			saved_checksum != result.checksum())
+	}
+
+public:
+	void save(std::ostream& stream) const
+	{
+		write_payload(stream);
+		stream << "CHECKSUM " << detail::decimal(checksum()) << " \nEND_INVERSE\n";
+		if (!stream)
+			throw std::runtime_error("could not write inverse artifact");
+	}
+
+	static program load(std::istream& stream)
+	{
+		reader input(stream, "inverse artifact");
+		auto result = read_circuit(input);
+		result.read_backend(input, stream);
+		input.expect("CHECKSUM");
+		if (input.number(std::numeric_limits<std::uint64_t>::max()) != result.checksum())
 			throw std::invalid_argument("inverse artifact checksum mismatch");
-		expect(stream, "END_INVERSE");
+		input.expect("END_INVERSE");
 		stream >> std::ws;
 		if (!stream.eof())
 			throw std::invalid_argument("unexpected trailing inverse data");

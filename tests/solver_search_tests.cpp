@@ -1,34 +1,36 @@
-#include "bitreverse.h"
-#include <iostream>
-#include <random>
+// Model enumeration by the search engines, checked against truth tables.
+
+#include <algorithm>
+#include <array>
+#include <bit>
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <set>
 #include <stdexcept>
+#include <utility>
+#include <vector>
+
+#include "bitreverse.h"
+#include "test_support.h"
 
 namespace br = dixelu::bitreverse;
 namespace cr = br::collision_resolution;
 namespace core = cr::solver_core;
+using test::require;
 using bindings = std::vector<std::pair<size_t, bool>>;
 
 namespace
 {
-void require(bool condition, const char* message)
-{
-	if (!condition) throw std::runtime_error(message);
-}
 
-std::uint64_t input_mask(size_t bit)
-{
-	std::uint64_t result = 0;
-	for (size_t assignment = 0; assignment < 64; ++assignment)
-		if ((assignment >> bit) & 1) result |= std::uint64_t{1} << assignment;
-	return result;
-}
-
+// The models must be exactly the assignments of `inputs` set in the truth table
+// `expected`, each reported once.
 void check_models(const std::shared_ptr<const core::compiled_circuit>& graph,
 	const std::vector<br::bit_tracker>& inputs, const bindings& bound,
-	std::uint64_t expected, br::solver_options options)
+	std::uint64_t expected, const br::solver_options& options)
 {
 	std::uint64_t actual = 0;
-	const auto count = cr::solve_compiled_stream(graph, bound, [&](const cr::crs_state& model)
+	const auto count = cr::solve_compiled_stream(graph, bound, [&](const cr::solution& model)
 	{
 		size_t assignment = 0;
 		for (size_t bit = 0; bit < inputs.size(); ++bit)
@@ -44,34 +46,16 @@ void check_models(const std::shared_ptr<const core::compiled_circuit>& graph,
 
 void randomized_truth_tables()
 {
-	std::mt19937 random(0x28367);
+	test::random_engine random(0x28367);
 	for (size_t trial = 0; trial < 100; ++trial)
 	{
-		std::vector<br::bit_tracker> inputs(6), expressions;
-		std::vector<std::uint64_t> masks;
-		for (size_t bit = 0; bit < 6; ++bit)
-		{
-			inputs[bit] = br::unknown;
-			expressions.push_back(inputs[bit]);
-			masks.push_back(input_mask(bit));
-		}
-		expressions.emplace_back(false); masks.push_back(0);
-		expressions.emplace_back(true); masks.push_back(~std::uint64_t{0});
-		for (size_t gate = 0; gate < 30; ++gate)
-		{
-			const size_t a = random() % expressions.size(), b = random() % expressions.size();
-			switch (random() % 4)
-			{
-				case 0: expressions.push_back(expressions[a] & expressions[b]); masks.push_back(masks[a] & masks[b]); break;
-				case 1: expressions.push_back(expressions[a] | expressions[b]); masks.push_back(masks[a] | masks[b]); break;
-				case 2: expressions.push_back(expressions[a] ^ expressions[b]); masks.push_back(masks[a] ^ masks[b]); break;
-				case 3: expressions.push_back(~expressions[a]); masks.push_back(~masks[a]); break;
-			}
-		}
+		const test::random_circuit circuit(random, 30, true);
+		const auto& masks = circuit.masks;
 		std::vector<dixelu::counted_ptr<br::details::bitstate>> roots;
-		for (size_t i = expressions.size() - 3; i < expressions.size(); ++i)
-			roots.push_back(expressions[i].bit_state);
-		for (const auto& input : inputs) roots.push_back(input.bit_state);
+		for (size_t i = circuit.expressions.size() - 3; i < circuit.expressions.size(); ++i)
+			roots.push_back(circuit.expressions[i].bit_state);
+		for (const auto& input : circuit.inputs)
+			roots.push_back(input.bit_state);
 		const auto graph = std::make_shared<const core::compiled_circuit>(std::move(roots));
 		for (unsigned target = 0; target < 8; ++target)
 		{
@@ -84,24 +68,20 @@ void randomized_truth_tables()
 				const auto mask = masks[masks.size() - 3 + bit];
 				expected &= value ? mask : ~mask;
 			}
-			for (unsigned mode = 0; mode < 3; ++mode)
-			{
-				br::solver_options options;
-				options.affine_reasoning = mode == 1;
-				options.conflict_learning = mode == 2;
-				check_models(graph, inputs, bound, expected, options);
-			}
+			for (const auto& options : test::search_engines)
+				check_models(graph, circuit.inputs, bound, expected, options);
 		}
 	}
 }
 
 void wide_affine()
 {
-	std::mt19937 random(0x17289);
-	std::vector<br::bit_tracker> inputs(130), free_inputs;
+	test::random_engine random(0x17289);
+	const auto inputs = test::unknown_bits(130);
 	const std::array<size_t, 6> free_indices{0, 1, 63, 64, 127, 129};
-	for (auto& input : inputs) input = br::unknown;
-	for (auto id : free_indices) free_inputs.push_back(inputs[id]);
+	std::vector<br::bit_tracker> free_inputs;
+	for (const auto id : free_indices)
+		free_inputs.push_back(inputs[id]);
 	std::vector<dixelu::counted_ptr<br::details::bitstate>> roots;
 	std::array<std::uint64_t, 8> masks{};
 	for (size_t row = 0; row < masks.size(); ++row)
@@ -109,19 +89,21 @@ void wide_affine()
 		br::bit_tracker expression(false);
 		for (size_t bit = 0; bit < inputs.size(); ++bit)
 		{
-			if (!(random() & 1)) continue;
+			if (!(random() & 1))
+				continue;
 			expression ^= inputs[bit];
-			const auto found = std::find(free_indices.begin(), free_indices.end(), bit);
-			masks[row] ^= found != free_indices.end() ? input_mask(found - free_indices.begin())
+			const auto found = std::ranges::find(free_indices, bit);
+			masks[row] ^= found != free_indices.end() ? test::input_mask(found - free_indices.begin())
 				: (bit % 3 == 0 ? ~std::uint64_t{0} : 0);
 		}
 		roots.push_back(expression.bit_state);
 	}
-	for (const auto& input : inputs) roots.push_back(input.bit_state);
+	for (const auto& input : inputs)
+		roots.push_back(input.bit_state);
 	const auto graph = std::make_shared<const core::compiled_circuit>(std::move(roots));
 	bindings fixed;
 	for (size_t bit = 0; bit < inputs.size(); ++bit)
-		if (std::find(free_indices.begin(), free_indices.end(), bit) == free_indices.end())
+		if (std::ranges::find(free_indices, bit) == free_indices.end())
 			fixed.emplace_back(graph->node_ids.at(inputs[bit].bit_state.get()), bit % 3 == 0);
 	for (unsigned target = 0; target < 256; ++target)
 	{
@@ -142,16 +124,10 @@ void deep_search_and_adjacency()
 	// No recursive search frames and no quadratic rescanning of the assigned
 	// prefix: a large unconstrained input must still finish under this budget.
 	std::vector<dixelu::counted_ptr<br::details::bitstate>> roots;
-	for (size_t i = 0; i < 20000; ++i)
-	{
-		br::bit_tracker input;
-		input = br::unknown;
+	for (const auto& input : test::unknown_bits(20000))
 		roots.push_back(input.bit_state);
-	}
 	const auto graph = std::make_shared<const core::compiled_circuit>(std::move(roots));
-	br::solver_options options;
-	options.affine_reasoning = false;
-	options.max_search_steps = 200000;
+	const br::solver_options options{.affine_reasoning = false, .max_search_steps = 200000};
 	require(cr::solve_compiled_stream(graph, {}, [](const auto& model)
 	{
 		require(model.assignments.size() == 20000, "deep search lost an input");
@@ -166,20 +142,103 @@ void deep_search_and_adjacency()
 	adjacency.build({});
 	require(adjacency.edges.empty() && adjacency.offsets == std::vector<size_t>{0}, "empty adjacency failed");
 }
+
+// assert_equality over (x & y) | z, which is true for five of its eight
+// assignments, through every overload and engine.
+void assert_equality_enumeration()
+{
+	const br::bit_tracker x = br::unknown, y = br::unknown, z = br::unknown;
+	const auto expression = (x & y) | z;
+	std::set<unsigned> streamed;
+	const auto stream = [&](const cr::solution& model)
+	{
+		const auto value = [&](const br::bit_tracker& bit) { return unsigned{model.assignments.at(bit.bit_state)}; };
+		require(streamed.insert(value(x) | value(y) << 1 | value(z) << 2).second,
+			"streaming emitted an assignment twice");
+	};
+
+	require(br::assert_equality(expression, true).size() == 5, "(x & y) | z must have five complete true assignments");
+	require(br::assert_equality(expression, true, true).size() == 1, "first-only solving must return one assignment");
+	require(br::assert_equality(expression, true, stream) == 5 && streamed.size() == 5,
+		"streaming must emit every complete assignment exactly once");
+	for (const auto& options : test::search_engines)
+	{
+		br::solver_statistics statistics;
+		require(br::assert_equality(expression, true, options, false, &statistics).size() == 5,
+			"every engine must enumerate the same five complete assignments");
+		require(statistics.solutions == 5 && statistics.variables == 3 && statistics.nodes >= 3 &&
+			statistics.decisions != 0 && statistics.propagations != 0 &&
+			(options.affine_reasoning || statistics.affine_passes == 0), "solver statistics mismatch");
+		require(br::assert_equality(expression, true, options, true).size() == 1,
+			"first-only solving must stop after one model");
+		streamed.clear();
+		size_t callbacks = 0;
+		require(br::assert_equality(expression, true, options, [&](const cr::solution& model)
+		{
+			stream(model);
+			return ++callbacks < 3;
+		}, &statistics) == 3 && streamed.size() == 3, "a false callback result must stop streaming immediately");
+	}
 }
+
+void unsatisfiable_and_conflict_learning()
+{
+	const br::bit_tracker x = br::unknown, y = br::unknown;
+	test::require_throws<br::unsatisfiable>([&] { (void)br::assert_equality(x & !x, true); },
+		"constant-false equality with true must be unsatisfiable");
+
+	br::bit_tracker contradiction = true;
+	for (const auto& clause : test::contradiction(x, y))
+		contradiction &= clause;
+	br::solver_statistics learned;
+	test::require_throws<br::unsatisfiable>([&] { (void)br::assert_equality(contradiction, true, test::cdcl, false, &learned); },
+		"CDCL accepted an unsatisfiable formula");
+	require(learned.conflicts != 0 && learned.learned_clauses != 0,
+		"CDCL must learn from a non-trivial unsatisfiable formula");
+
+	auto bounded = test::cdcl;
+	bounded.max_conflict_analysis_nodes = 1;
+	br::solver_statistics cutoff;
+	test::require_throws<br::unsatisfiable>([&] { (void)br::assert_equality(contradiction, true, bounded, false, &cutoff); },
+		"bounded CDCL analysis accepted an unsatisfiable formula");
+	require(cutoff.conflict_analysis_cutoffs != 0, "bounded CDCL analysis must fall back without losing completeness");
+
+	test::require_throws<std::logic_error>([&]
+	{
+		(void)br::assert_equality(x | y, true, br::solver_options{.conflict_learning = true}, true);
+	}, "CDCL must reject active affine propagation without explanations");
+}
+
+// Fanout orders the decisions as a, c, d. Once a = d = true, the two trap
+// clauses imply both x and !x, so the learned (!a | !d) clause can skip the
+// irrelevant decision level of c.
+void backjumping()
+{
+	const br::bit_tracker a = br::unknown, c = br::unknown, d = br::unknown, x = br::unknown;
+	const br::bit_tracker p = br::unknown, q = br::unknown, r = br::unknown, s = br::unknown;
+	const br::bit_tracker t = br::unknown, u = br::unknown, v = br::unknown;
+	const auto padding_a = (a | p) & (a | q);
+	const auto padding_c = (c | u) & (c | v) & (c | r) & (c | t);
+	const auto padding_d = d | s;
+	const auto trap = (~a | ~d | x) & (~a | ~d | ~x);
+	const auto expression = padding_a & padding_c & padding_d & trap & (t | a);
+	const br::solver_options options{.affine_reasoning = false, .conflict_learning = true, .max_conflict_analysis_nodes = 0};
+	br::solver_statistics statistics;
+	require(br::assert_equality(expression, true, options, true, &statistics).size() == 1 &&
+		statistics.learned_clauses != 0 && statistics.backjumps != 0,
+		"first-UIP learning must skip an irrelevant decision level");
+}
+
+} // namespace
 
 int main()
 {
-	try
-	{
-		randomized_truth_tables();
-		wide_affine();
-		deep_search_and_adjacency();
-		std::cout << "All solver search tests passed\n";
-	}
-	catch (const std::exception& error)
-	{
-		std::cerr << error.what() << '\n';
-		return 1;
-	}
+	return test::run("solver_search", {
+		{"randomized_truth_tables", randomized_truth_tables},
+		{"wide_affine", wide_affine},
+		{"deep_search_and_adjacency", deep_search_and_adjacency},
+		{"assert_equality_enumeration", assert_equality_enumeration},
+		{"unsatisfiable_and_conflict_learning", unsatisfiable_and_conflict_learning},
+		{"backjumping", backjumping},
+	});
 }

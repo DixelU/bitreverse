@@ -1,6 +1,8 @@
 #ifndef DIXELU_BITREVERSE_PARTIAL_ASSERT_H
 #define DIXELU_BITREVERSE_PARTIAL_ASSERT_H
 
+#include <limits>
+
 #include "bitreverse.h"
 
 namespace dixelu::bitreverse
@@ -42,10 +44,14 @@ class partial_assert_context
 	using compiled_circuit = collision_resolution::solver_core::compiled_circuit;
 	using replacement_map = std::unordered_map<node_t, node_ptr>;
 
+	// Affine initialization recurses along NOT/XOR chains; this bounds its stack depth.
+	static constexpr std::size_t max_affine_depth = 512;
+
 	struct graph_info
 	{
 		std::vector<node_ptr> postorder;
 		std::size_t atoms{0};
+		// Longest NOT/XOR chain.
 		std::size_t affine_depth{0};
 	};
 
@@ -57,10 +63,14 @@ class partial_assert_context
 	std::size_t known_variables_{0};
 	solver_statistics statistics_;
 
+	// Rejects malformed DAGs and enforces the node budget before anything is
+	// compiled; compiled_circuit itself assumes a well-formed graph.
 	graph_info inspect(const std::vector<node_ptr>& roots) const
 	{
+		constexpr std::size_t visiting = std::numeric_limits<std::size_t>::max();
+
 		graph_info result;
-		std::unordered_map<node_t, unsigned char> color;
+		// Affine depth of each finished node; `visiting` marks the current DFS path.
 		std::unordered_map<node_t, std::size_t> depths;
 		std::vector<std::pair<node_ptr, bool>> stack;
 
@@ -86,28 +96,26 @@ class partial_assert_context
 						++depth;
 					}
 
-					depths.emplace(raw, depth);
+					depths.at(raw) = depth;
 					result.affine_depth = std::max(result.affine_depth, depth);
 					result.atoms += op == '*' || op == '&' || op == '|';
-					color.at(raw) = 2;
 					result.postorder.push_back(std::move(node));
 					continue;
 				}
 
-				const auto existing = color.find(raw);
-				if (existing != color.end())
+				if (const auto existing = depths.find(raw); existing != depths.end())
 				{
-					if (existing->second == 1)
+					if (existing->second == visiting)
 						throw std::invalid_argument("Partial assertion has a cyclic expression");
 					continue;
 				}
 
 				if (op != '=' && op != '*' && op != '!' && op != '^' && op != '&' && op != '|')
 					throw std::invalid_argument("Partial assertion has an unsupported operation");
-				if (color.size() >= options_.max_nodes)
+				if (depths.size() >= options_.max_nodes)
 					throw partial_assert_limit("Partial assertion node budget exceeded");
 
-				color.emplace(raw, 1);
+				depths.emplace(raw, visiting);
 				stack.emplace_back(node, true);
 				const auto arity = details::operation_args_count[op];
 				if (arity == 2)
@@ -119,26 +127,26 @@ class partial_assert_context
 		return result;
 	}
 
+	// This context's affine budgets can only disable affine reasoning that the
+	// solver options allow; gate propagation stays sound without it.
 	solver_options bounded_affine_options(const graph_info& graph, solver_options selected) const
 	{
-		selected.max_affine_atoms = std::min(selected.max_affine_atoms, options_.max_affine_atoms);
-		// Existing affine initialization recursively expands XOR/NOT chains.
-		// Gate propagation remains available when dense/recursive work is unsafe.
-		const std::size_t words = graph.atoms / 64 + (graph.atoms % 64 != 0);
+		const std::size_t words = (graph.atoms + 63) / 64;
 		const bool fits = words == 0 ||
 			graph.postorder.size() <= options_.max_affine_bytes / sizeof(std::uint64_t) / 2 / words;
 		selected.affine_reasoning = selected.affine_reasoning && options_.affine_reasoning &&
-			graph.atoms <= selected.max_affine_atoms && graph.affine_depth <= 512 && fits;
+			graph.atoms <= std::min(selected.max_affine_atoms, options_.max_affine_atoms) &&
+			graph.affine_depth <= max_affine_depth && fits;
 		return selected;
 	}
 
-	std::vector<node_ptr> roots() const
+	static std::vector<node_ptr> roots_of(const std::vector<bit_tracker>& requirements)
 	{
-		std::vector<node_ptr> result;
-		result.reserve(requirements_.size());
-		for (const auto& requirement : requirements_)
-			result.push_back(requirement.bit_state);
-		return result;
+		std::vector<node_ptr> roots;
+		roots.reserve(requirements.size());
+		for (const auto& requirement : requirements)
+			roots.push_back(requirement.bit_state);
+		return roots;
 	}
 
 	replacement_map replacements(const std::vector<node_ptr>& selected) const
@@ -189,11 +197,9 @@ public:
 		auto pending = requirements_;
 		pending.push_back(std::move(condition));
 
-		auto selected = roots();
-		selected.push_back(pending.back().bit_state);
-
-		const auto graph = inspect(selected);
-		const compiled_circuit circuit(std::move(selected));
+		auto roots = roots_of(pending);
+		const auto graph = inspect(roots);
+		const compiled_circuit circuit(std::move(roots));
 
 		solver_statistics next_statistics;
 		next_statistics.nodes = circuit.nodes.size();
@@ -324,16 +330,16 @@ public:
 		std::size_t max_solutions = 1, const solver_options& options = {},
 		solver_statistics* statistics = nullptr) const
 	{
-		auto selected = roots();
+		auto roots = roots_of(requirements_);
 		for (const auto& input : inputs)
 		{
 			if (!input.bit_state || (input.bit_state->operation != '*' && input.bit_state->operation != '='))
 				throw std::invalid_argument("Partial assertion solve inputs must be original input leaves");
-			selected.push_back(input.bit_state);
+			roots.push_back(input.bit_state);
 		}
 
-		const auto graph = inspect(selected);
-		const auto circuit = std::make_shared<const compiled_circuit>(std::move(selected));
+		const auto graph = inspect(roots);
+		const auto circuit = std::make_shared<const compiled_circuit>(std::move(roots));
 
 		std::vector<std::pair<std::size_t, bool>> bindings;
 		for (std::size_t i = 0; i < requirements_.size(); ++i)
@@ -349,7 +355,7 @@ public:
 
 		std::size_t count = 0;
 		return collision_resolution::solve_compiled_stream(circuit, bindings,
-			[&](const collision_resolution::crs_state& solution)
+			[&](const collision_resolution::solution& solution)
 			{
 				++count;
 				const bool keep_going = !callback || callback(solution);

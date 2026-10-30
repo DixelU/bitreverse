@@ -1,51 +1,30 @@
-#include "inverse/affine_plan.h"
+// detail::affine_plan, the direct affine inverse, on its own: exhaustive
+// checks against truth tables, and its archive format.
 
 #include <bit>
+#include <cstddef>
 #include <cstdint>
 #include <iomanip>
-#include <iostream>
-#include <random>
+#include <optional>
 #include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
+#include "inverse/affine_plan.h"
+#include "test_support.h"
+
 namespace br = dixelu::bitreverse;
+using test::require;
+using test::require_throws;
 
 namespace
 {
 
 using plan_type = br::inversion::detail::affine_plan;
 using circuit_type = br::collision_resolution::solver_core::compiled_circuit;
-
-void require(bool condition, const char* message)
-{
-	if (!condition)
-		throw std::runtime_error(message);
-}
-
-template<typename Exception, typename Function>
-void require_throws(Function&& function, const char* message)
-{
-	try
-	{
-		function();
-	}
-	catch (const Exception&)
-	{
-		return;
-	}
-	throw std::runtime_error(message);
-}
-
-std::vector<br::bit_tracker> unknown_bits(size_t count)
-{
-	std::vector<br::bit_tracker> result(count);
-	for (auto& bit : result)
-		bit = br::unknown;
-	return result;
-}
 
 std::optional<plan_type> compile_plan(
 	const std::vector<br::bit_tracker>& outputs,
@@ -66,32 +45,16 @@ std::optional<plan_type> compile_plan(
 	return plan_type::compile(circuit, output_ids, input_ids);
 }
 
-std::vector<bool> unpack(unsigned value, size_t count)
-{
-	std::vector<bool> result(count);
-	for (size_t bit = 0; bit < count; ++bit)
-		result[bit] = (value >> bit) & 1U;
-	return result;
-}
-
-unsigned pack(const std::vector<bool>& value)
-{
-	unsigned result = 0;
-	for (size_t bit = 0; bit < value.size(); ++bit)
-		result |= static_cast<unsigned>(value[bit]) << bit;
-	return result;
-}
-
 void exhaustive_affine_maps()
 {
-	std::mt19937 random(19091);
+	test::random_engine random(19091);
 	for (size_t input_count = 0; input_count <= 6; ++input_count)
 	{
 		for (size_t output_count = 0; output_count <= 5; ++output_count)
 		{
 			for (size_t trial = 0; trial < 40; ++trial)
 			{
-				const auto inputs = unknown_bits(input_count);
+				const auto inputs = test::unknown_bits(input_count);
 				std::vector<unsigned> masks(output_count);
 				std::vector<bool> constants(output_count);
 				std::vector<br::bit_tracker> outputs;
@@ -122,7 +85,7 @@ void exhaustive_affine_maps()
 
 				// This oracle evaluates the generated truth table directly;
 				// it does not perform elimination or inspect plan internals.
-				std::vector<std::set<unsigned>> expected(1U << output_count);
+				std::vector<std::set<std::uint64_t>> expected(1U << output_count);
 				for (unsigned input = 0; input < (1U << input_count); ++input)
 				{
 					unsigned output = 0;
@@ -135,16 +98,16 @@ void exhaustive_affine_maps()
 				}
 				for (unsigned output = 0; output < (1U << output_count); ++output)
 				{
-					const auto target = unpack(output, output_count);
-					std::set<unsigned> actual;
+					const auto target = test::to_bits(output, output_count);
+					std::set<std::uint64_t> actual;
 					for (unsigned free = 0; free < (1U << plan->free_bit_count()); ++free)
 					{
-						const auto parameters = unpack(free, plan->free_bit_count());
+						const auto parameters = test::to_bits(free, plan->free_bit_count());
 						const auto result = loaded.evaluate(target, parameters);
 						require(result == plan->evaluate(target, parameters),
 							"Loaded and original plans must return identical inputs");
 						if (result)
-							require(actual.insert(pack(*result)).second,
+							require(actual.insert(test::from_bits(*result)).second,
 								"Independent free bits must select distinct solutions");
 					}
 					require(actual == expected[output],
@@ -157,7 +120,7 @@ void exhaustive_affine_maps()
 
 void word_boundaries_and_consistency()
 {
-	const auto inputs = unknown_bits(75);
+	const auto inputs = test::unknown_bits(75);
 	std::vector<br::bit_tracker> outputs;
 	for (size_t row = 0; row < 70; ++row)
 		outputs.push_back(row ?
@@ -206,7 +169,7 @@ void word_boundaries_and_consistency()
 
 void constants_and_parameter_order()
 {
-	const auto inputs = unknown_bits(3);
+	const auto inputs = test::unknown_bits(3);
 	const auto constant = compile_plan({br::bit_tracker(false), br::bit_tracker(true)}, inputs);
 	require(constant && constant->free_bit_count() == 3,
 		"All declared inputs of a constant map must remain free");
@@ -238,7 +201,7 @@ br::bit_tracker raw_gate(char operation, const br::bit_tracker& lhs, const br::b
 
 void affine_detection_and_deep_graph()
 {
-	const auto inputs = unknown_bits(2);
+	const auto inputs = test::unknown_bits(2);
 	const auto a = raw_gate('^', inputs[0], inputs[1]);
 	const auto b = raw_gate('^', inputs[1], inputs[0]);
 	const auto outputs = std::vector<br::bit_tracker>{
@@ -265,7 +228,7 @@ void affine_detection_and_deep_graph()
 
 void malformed_archives()
 {
-	const auto inputs = unknown_bits(2);
+	const auto inputs = test::unknown_bits(2);
 	const auto plan = compile_plan({inputs[0] ^ inputs[1], !inputs[0]}, inputs);
 	require(plan.has_value(), "Archive test map must compile");
 	std::stringstream archive;
@@ -305,10 +268,11 @@ void malformed_archives()
 
 int main()
 {
-	exhaustive_affine_maps();
-	word_boundaries_and_consistency();
-	constants_and_parameter_order();
-	affine_detection_and_deep_graph();
-	malformed_archives();
-	std::cout << "All affine inverse tests passed\n";
+	return test::run("affine_inverse", {
+		{"exhaustive_affine_maps", exhaustive_affine_maps},
+		{"word_boundaries_and_consistency", word_boundaries_and_consistency},
+		{"constants_and_parameter_order", constants_and_parameter_order},
+		{"affine_detection_and_deep_graph", affine_detection_and_deep_graph},
+		{"malformed_archives", malformed_archives},
+	});
 }

@@ -2,15 +2,17 @@
 #define DIXELU_BITREVERSE_INVERSE_SYNTHESIZED_PLAN_H
 
 #include "../bitreverse.h"
+#include "counting_resource.h"
 #include "synthesis_profile.h"
+#include "text_io.h"
 
-#include <charconv>
+#include <algorithm>
 #include <chrono>
 #include <functional>
 #include <istream>
+#include <optional>
 #include <ostream>
 #include <span>
-#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -50,35 +52,35 @@ namespace detail
 // Evaluation of that circuit never invokes a solver or traverses input choices.
 class synthesized_plan
 {
+	using circuit_type = collision_resolution::solver_core::compiled_circuit;
+	using memory_resource = counting_resource<synthesis_limit>;
 	static constexpr size_t absent = static_cast<size_t>(-1);
 	static constexpr size_t max_dimension = 512;
-	static constexpr size_t storage_node_limit = 1000000;
+
 	struct decision
 	{
 		size_t variable, low, high;
 		bool operator==(const decision&) const = default;
-	};
-	struct decision_hash
-	{
-		size_t operator()(const decision& value) const
-		{
-			size_t seed = value.variable;
-			seed ^= value.low + size_t{0x9e3779b9} + (seed << 6) + (seed >> 2);
-			return seed ^ (value.high + size_t{0x9e3779b9} + (seed << 6) + (seed >> 2));
-		}
 	};
 	struct pair_key
 	{
 		size_t first, second;
 		bool operator==(const pair_key&) const = default;
 	};
+	static size_t combine(size_t seed, size_t value)
+	{
+		return seed ^ (value + size_t{0x9e3779b9} + (seed << 6) + (seed >> 2));
+	}
+	struct decision_hash
+	{
+		size_t operator()(const decision& value) const
+		{
+			return combine(combine(value.variable, value.low), value.high);
+		}
+	};
 	struct pair_hash
 	{
-		size_t operator()(const pair_key& key) const
-		{
-			return key.first ^ (key.second + size_t{0x9e3779b9} +
-				(key.first << 6) + (key.first >> 2));
-		}
+		size_t operator()(const pair_key& key) const { return combine(key.first, key.second); }
 	};
 
 	class manager
@@ -106,7 +108,7 @@ class synthesized_plan
 			const decision key{variable, low, high};
 			if (const auto found = unique_.find(key); found != unique_.end())
 				return found->second;
-			if (nodes.size() - 2 >= options_.max_nodes || nodes.size() - 2 >= storage_node_limit)
+			if (nodes.size() - 2 >= options_.max_nodes || nodes.size() - 2 >= artifact_node_limit)
 				throw synthesis_limit("Boolean synthesis node budget exceeded");
 			const size_t result = nodes.size();
 			nodes.push_back(key);
@@ -161,7 +163,6 @@ class synthesized_plan
 	size_t relation_{};
 	size_t valid_{};
 	std::vector<size_t> functions_;
-	std::vector<size_t> function_order_;
 	std::vector<decision> function_steps_;
 	std::vector<size_t> function_results_;
 	size_t function_valid_{};
@@ -192,321 +193,367 @@ class synthesized_plan
 		return seen;
 	}
 
+	// The number of decisions (terminals excluded) reachable from roots.
+	static size_t reachable_count(std::span<const decision> nodes,
+		const std::vector<size_t>& roots, manager* budget = nullptr)
+	{
+		const auto seen = reachable(nodes, roots, budget);
+		return static_cast<size_t>(std::count(seen.begin() + 2, seen.end(), 1));
+	}
+
+	// Renumbers the target-only DAG of the functions and the validity predicate
+	// into a children-first schedule, and counts each retained subgraph.
 	void index_functions(manager* budget = nullptr)
 	{
 		auto roots = functions_;
 		roots.push_back(valid_);
 		const auto seen = reachable(nodes_, roots, budget);
 		if (budget) budget->tick(nodes_.size());
-		function_order_.clear();
-		for (size_t id = 2; id < nodes_.size(); ++id)
-			if (seen[id])
-			{
-				if (nodes_[id].variable >= output_count_)
-					throw std::runtime_error("Synthesized function depends on an input variable");
-				function_order_.push_back(id);
-			}
 		std::vector<size_t> remap(nodes_.size());
 		remap[1] = 1;
 		function_steps_.clear();
-		for (const size_t id : function_order_)
+		for (size_t id = 2; id < nodes_.size(); ++id)
 		{
+			if (!seen[id]) continue;
 			const auto current = nodes_[id];
+			if (current.variable >= output_count_)
+				throw std::runtime_error("Synthesized function depends on an input variable");
 			remap[id] = function_steps_.size() + 2;
 			function_steps_.push_back({current.variable, remap[current.low], remap[current.high]});
 		}
 		function_valid_ = remap[valid_];
 		function_results_.clear();
 		for (const size_t root : functions_) function_results_.push_back(remap[root]);
-		const auto relation_seen = reachable(nodes_, {relation_}, budget);
-		relation_nodes_ = static_cast<size_t>(std::count(
-			relation_seen.begin() + 2, relation_seen.end(), static_cast<unsigned char>(1)));
-		const auto selector_seen = reachable(nodes_, functions_, budget);
-		selector_nodes_ = static_cast<size_t>(std::count(
-			selector_seen.begin() + 2, selector_seen.end(), static_cast<unsigned char>(1)));
-		const auto validity_seen = reachable(nodes_, {valid_}, budget);
-		validity_nodes_ = static_cast<size_t>(std::count(
-			validity_seen.begin() + 2, validity_seen.end(), static_cast<unsigned char>(1)));
+		relation_nodes_ = reachable_count(nodes_, {relation_}, budget);
+		selector_nodes_ = reachable_count(nodes_, functions_, budget);
+		validity_nodes_ = reachable_count(nodes_, {valid_}, budget);
 	}
 
-	static bool whitespace(int c)
+	// Records each construction phase's graph growth, work and tracked memory.
+	class profiler
 	{
-		return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
-	}
-	static void skip_space(std::istream& stream)
-	{
-		while (whitespace(stream.peek())) stream.get();
-	}
-	static void expect(std::istream& stream, std::string_view token)
-	{
-		skip_space(stream);
-		for (const char c : token)
-			if (stream.get() != c) throw std::runtime_error("Invalid synthesized plan marker");
-		if (stream.peek() != std::char_traits<char>::eof() && !whitespace(stream.peek()))
-			throw std::runtime_error("Invalid synthesized plan token");
-	}
-	static size_t read_number(std::istream& stream, size_t limit)
-	{
-		skip_space(stream);
-		size_t value = 0, digits = 0;
-		while (stream.peek() >= '0' && stream.peek() <= '9')
+		synthesis_statistics* statistics_;
+		const manager& bdd_;
+		memory_resource& memory_;
+		std::chrono::steady_clock::time_point started_ = std::chrono::steady_clock::now();
+		std::chrono::steady_clock::time_point phase_started_ = started_;
+		synthesis_phase phase_ = synthesis_phase::forward;
+		size_t phase_nodes_{}, phase_operations_{};
+
+		void close(bool completed, const std::vector<size_t>& live_roots)
 		{
-			const size_t digit = static_cast<size_t>(stream.get() - '0');
-			if (++digits > 20 || digit > limit || value > (limit - digit) / 10)
-				throw std::runtime_error("Synthesized plan number exceeds its limit");
-			value = value * 10 + digit;
+			if (!statistics_) return;
+			auto& record = statistics_->phases[static_cast<size_t>(phase_)];
+			if (record.completed) return;
+			record.elapsed = std::chrono::steady_clock::now() - phase_started_;
+			record.created_nodes = bdd_.nodes.size() - 2 - phase_nodes_;
+			record.operations = bdd_.operations - phase_operations_;
+			record.resident_nodes = bdd_.nodes.size() - 2;
+			record.tracked_bytes = memory_.current();
+			record.peak_tracked_bytes = memory_.phase_peak();
+			if (completed) record.live_nodes = reachable_count(bdd_.nodes, live_roots);
+			record.completed = completed;
 		}
-		if (!digits || (stream.peek() != std::char_traits<char>::eof() && !whitespace(stream.peek())))
-			throw std::runtime_error("Invalid synthesized plan number");
-		return value;
-	}
-	static void write_number(std::ostream& stream, size_t value)
+
+		void report()
+		{
+			if (!statistics_) return;
+			statistics_->created_nodes = bdd_.nodes.size() - 2;
+			statistics_->operations = bdd_.operations;
+			statistics_->elapsed = std::chrono::steady_clock::now() - started_;
+			statistics_->peak_tracked_bytes = memory_.peak();
+		}
+
+	public:
+		profiler(synthesis_statistics* statistics, const manager& bdd, memory_resource& memory)
+			: statistics_(statistics), bdd_(bdd), memory_(memory)
+		{
+			if (statistics_)
+			{
+				*statistics_ = {};
+				statistics_->phases[0].started = true;
+			}
+			memory_.begin_phase();
+		}
+
+		// Completes the current phase, whose outputs are live_roots, and starts next.
+		void advance(const std::vector<size_t>& live_roots, synthesis_phase next)
+		{
+			close(true, live_roots);
+			phase_ = next;
+			phase_started_ = std::chrono::steady_clock::now();
+			phase_nodes_ = bdd_.nodes.size() - 2;
+			phase_operations_ = bdd_.operations;
+			memory_.begin_phase();
+			if (statistics_) statistics_->phases[static_cast<size_t>(phase_)].started = true;
+		}
+
+		void finish(const std::vector<size_t>& live_roots)
+		{
+			close(true, live_roots);
+			report();
+		}
+
+		void fail()
+		{
+			if (statistics_) statistics_->failed_phase = phase_;
+			close(false, {});
+			report();
+		}
+	};
+
+	// Construction work state. Its containers allocate from the tracked
+	// resource and live until construction ends, so each phase's memory
+	// statistics include the work vectors kept from earlier phases.
+	class builder
 	{
-		char buffer[32];
-		const auto result = std::to_chars(buffer, buffer + sizeof(buffer), value);
-		stream.write(buffer, result.ptr - buffer);
-		stream.put(' ');
-	}
+		struct frame { size_t id, next; };
+		struct witness
+		{
+			size_t valid;
+			std::pmr::vector<size_t> bits;
+			witness(size_t value, size_t width, std::pmr::memory_resource* resource)
+				: valid(value), bits(width, resource) {}
+			// A plain pmr copy would allocate from the default resource instead.
+			witness(const witness& other)
+				: valid(other.valid), bits(other.bits, other.bits.get_allocator()) {}
+			witness(witness&&) = default;
+		};
+
+		const circuit_type& circuit_;
+		const std::vector<size_t>& output_ids_;
+		const std::vector<size_t>& variable_ids_;
+		const std::vector<size_t>& requirement_ids_;
+		const synthesis_options& options_;
+		manager& bdd_;
+		std::pmr::memory_resource* memory_;
+		std::pmr::vector<size_t> columns_, forward_, roots_;
+		std::pmr::vector<unsigned char> state_;
+		std::pmr::vector<frame> stack_;
+		std::pmr::vector<size_t> complements_;
+		std::pmr::unordered_map<pair_key, size_t, pair_hash> relation_cache_;
+		std::pmr::unordered_map<size_t, witness> witness_cache_;
+		std::optional<witness> canonical_;
+		std::pmr::vector<size_t> remap_;
+
+		size_t gate(size_t id, char operation)
+		{
+			const auto& children = circuit_.inputs[id];
+			if (operation == '=')
+				return circuit_.nodes[id]->state != 0;
+			if (operation == '*')
+			{
+				if (columns_[id] == absent)
+					throw std::invalid_argument("Undeclared synthesis input variable");
+				return bdd_.make(output_ids_.size() + columns_[id], 0, 1);
+			}
+			if (operation == '!')
+				return bdd_.negate(forward_[children[0]]);
+			return bdd_.apply(operation, forward_[children[0]], forward_[children[1]]);
+		}
+
+		void build_cone(size_t root)
+		{
+			const size_t count = circuit_.nodes.size();
+			stack_.push_back({root, 0});
+			state_[root] = 1;
+			while (!stack_.empty())
+			{
+				bdd_.tick();
+				auto& current = stack_.back();
+				const size_t id = current.id;
+				const char operation = static_cast<char>(circuit_.nodes[id]->operation);
+				if (operation != '=' && operation != '*' && operation != '!' &&
+					operation != '&' && operation != '|' && operation != '^')
+					throw std::invalid_argument("Unsupported synthesis gate");
+				const size_t arity = details::operation_args_count[static_cast<unsigned char>(operation)];
+				if (current.next < arity)
+				{
+					const size_t child = circuit_.inputs[id][current.next++];
+					if (child >= count) throw std::invalid_argument("Invalid synthesis child");
+					if (state_[child] == 1) throw std::invalid_argument("Cyclic synthesis circuit");
+					if (state_[child] == 0) { state_[child] = 1; stack_.push_back({child, 0}); }
+					continue;
+				}
+				forward_[id] = gate(id, operation);
+				state_[id] = 2;
+				stack_.pop_back();
+			}
+		}
+
+		// Splits subset by each remaining target bit's output value.
+		size_t relate(size_t index, size_t subset)
+		{
+			bdd_.tick();
+			if (subset == 0 || index == output_ids_.size()) return subset;
+			const pair_key key{index, subset};
+			if (const auto found = relation_cache_.find(key); found != relation_cache_.end())
+				return found->second;
+			const size_t low_domain = bdd_.apply('&', subset, complements_[index]);
+			const size_t high_domain = bdd_.apply('&', subset, forward_[output_ids_[index]]);
+			const size_t low = relate(index + 1, low_domain);
+			const size_t high = relate(index + 1, high_domain);
+			const size_t result = bdd_.make(index, low, high);
+			if (relation_cache_.size() >= options_.max_nodes) relation_cache_.clear();
+			relation_cache_.emplace(key, result);
+			return result;
+		}
+
+		witness synthesize(size_t id)
+		{
+			const size_t inputs = variable_ids_.size(), outputs = output_ids_.size();
+			bdd_.tick(inputs + 1);
+			if (const auto found = witness_cache_.find(id); found != witness_cache_.end())
+				return found->second;
+			witness result{static_cast<size_t>(id != 0), inputs, memory_};
+			if (id >= 2 && bdd_.nodes[id].variable < outputs)
+			{
+				const auto current = bdd_.nodes[id];
+				const auto low = synthesize(current.low), high = synthesize(current.high);
+				result.valid = bdd_.make(current.variable, low.valid, high.valid);
+				for (size_t bit = 0; bit < inputs; ++bit)
+				{
+					bdd_.tick();
+					if (low.valid == 0) result.bits[bit] = high.bits[bit];
+					else if (high.valid == 0) result.bits[bit] = low.bits[bit];
+					else result.bits[bit] = bdd_.make(current.variable, low.bits[bit], high.bits[bit]);
+				}
+			}
+			else
+			{
+				// A nonzero input-domain BDD always has a satisfying path.
+				// Prefer low edges and leave skipped variables at zero.
+				for (size_t cursor = id; cursor >= 2;)
+				{
+					bdd_.tick();
+					const auto current = bdd_.nodes[cursor];
+					const bool high = current.low == 0;
+					result.bits[current.variable - outputs] = high;
+					cursor = high ? current.high : current.low;
+				}
+			}
+			witness_cache_.emplace(id, result);
+			return result;
+		}
+
+	public:
+		builder(const circuit_type& circuit, const std::vector<size_t>& output_ids,
+			const std::vector<size_t>& variable_ids, const std::vector<size_t>& requirement_ids,
+			const synthesis_options& options, manager& bdd, std::pmr::memory_resource* memory)
+			: circuit_(circuit), output_ids_(output_ids), variable_ids_(variable_ids),
+			  requirement_ids_(requirement_ids), options_(options), bdd_(bdd), memory_(memory),
+			  columns_(memory), forward_(memory), roots_(memory), state_(memory), stack_(memory),
+			  complements_(memory), relation_cache_(memory), witness_cache_(memory), remap_(memory) {}
+
+		// Builds the forward BDD of every node the outputs and requirements
+		// reach, and returns the BDDs of those roots.
+		std::vector<size_t> forward()
+		{
+			const size_t count = circuit_.nodes.size();
+			bdd_.tick(count);
+			columns_.assign(count, absent);
+			forward_.resize(count);
+			for (size_t column = 0; column < variable_ids_.size(); ++column)
+			{
+				bdd_.tick();
+				const size_t id = variable_ids_[column];
+				if (id >= count || circuit_.nodes[id]->operation != '*' || columns_[id] != absent)
+					throw std::invalid_argument("Invalid synthesis input variable");
+				columns_[id] = column;
+			}
+			roots_.assign(output_ids_.begin(), output_ids_.end());
+			bdd_.tick(requirement_ids_.size());
+			roots_.insert(roots_.end(), requirement_ids_.begin(), requirement_ids_.end());
+			state_.resize(count);
+			for (const size_t root : roots_)
+			{
+				bdd_.tick();
+				if (root >= count) throw std::invalid_argument("Invalid synthesis root");
+				if (state_[root] != 2) build_cone(root);
+			}
+			std::vector<size_t> result;
+			for (const size_t id : roots_) result.push_back(forward_[id]);
+			return result;
+		}
+
+		// The exact relation over target then input variables, restricted to
+		// inputs that meet every requirement.
+		size_t relation()
+		{
+			size_t domain = 1;
+			for (const size_t id : requirement_ids_) domain = bdd_.apply('&', domain, forward_[id]);
+			for (const size_t id : output_ids_) complements_.push_back(bdd_.negate(forward_[id]));
+			return relate(0, domain);
+		}
+
+		// Eliminates the input variables of a relation: a validity predicate
+		// over targets, and one target-only function per input bit.
+		const witness& canonical(size_t relation)
+		{
+			canonical_.emplace(synthesize(relation));
+			return *canonical_;
+		}
+
+		// Moves the decisions reachable from roots into plan, renumbered in order.
+		void compact(synthesized_plan& plan, const std::vector<size_t>& roots)
+		{
+			const auto used = reachable(bdd_.nodes, roots, &bdd_);
+			bdd_.tick(bdd_.nodes.size());
+			remap_.resize(bdd_.nodes.size());
+			remap_[1] = 1;
+			for (size_t id = 2; id < bdd_.nodes.size(); ++id)
+				if (used[id])
+				{
+					const auto current = bdd_.nodes[id];
+					remap_[id] = plan.nodes_.size();
+					plan.nodes_.push_back({current.variable, remap_[current.low], remap_[current.high]});
+				}
+			plan.relation_ = remap_[plan.relation_];
+			plan.valid_ = remap_[plan.valid_];
+			for (auto& function : plan.functions_) function = remap_[function];
+		}
+	};
 
 public:
 	static synthesized_plan compile(
-		const collision_resolution::solver_core::compiled_circuit& circuit,
+		const circuit_type& circuit,
 		const std::vector<size_t>& output_ids,
 		const std::vector<size_t>& variable_ids,
 		const std::vector<size_t>& requirement_ids,
-		const synthesis_options& options = {},
-		synthesis_statistics* statistics = nullptr)
+		const synthesis_options& options,
+		synthesis_statistics* statistics)
 	{
-		const auto started = std::chrono::steady_clock::now();
-		synthesis_memory_resource memory;
+		memory_resource memory;
 		manager bdd(options, &memory);
-		if (statistics) *statistics = {};
-		auto phase = synthesis_phase::forward;
-		auto phase_started = started;
-		size_t phase_nodes = 0, phase_operations = 0;
-		if (statistics) statistics->phases[0].started = true;
-		memory.begin_phase();
-		auto finish_phase = [&](bool completed, const std::vector<size_t>& live_roots)
-		{
-			if (!statistics) return;
-			auto& record = statistics->phases[static_cast<size_t>(phase)];
-			if (record.completed) return;
-			record.elapsed = std::chrono::steady_clock::now() - phase_started;
-			record.created_nodes = bdd.nodes.size() - 2 - phase_nodes;
-			record.operations = bdd.operations - phase_operations;
-			record.resident_nodes = bdd.nodes.size() - 2;
-			record.tracked_bytes = memory.current();
-			record.peak_tracked_bytes = memory.phase_peak();
-			if (completed)
-			{
-				const auto scan_started = std::chrono::steady_clock::now();
-				const auto live = reachable(bdd.nodes, live_roots);
-				record.live_nodes = static_cast<size_t>(std::count(live.begin() + 2, live.end(), 1));
-				statistics->profiling_elapsed += std::chrono::steady_clock::now() - scan_started;
-			}
-			record.completed = completed;
-		};
-		auto begin_phase = [&](synthesis_phase next)
-		{
-			phase = next;
-			phase_started = std::chrono::steady_clock::now();
-			phase_nodes = bdd.nodes.size() - 2;
-			phase_operations = bdd.operations;
-			memory.begin_phase();
-			if (statistics) statistics->phases[static_cast<size_t>(phase)].started = true;
-		};
-		auto report = [&]
-		{
-			if (!statistics) return;
-			statistics->created_nodes = bdd.nodes.size() - 2;
-			statistics->operations = bdd.operations;
-			statistics->elapsed = std::chrono::steady_clock::now() - started;
-			statistics->peak_tracked_bytes = memory.peak();
-		};
+		profiler profile(statistics, bdd, memory);
 		try
 		{
 			if (!options.max_nodes || !options.max_operations)
 				throw synthesis_limit("Boolean synthesis budgets must be positive");
-			const size_t inputs = variable_ids.size(), outputs = output_ids.size();
-			if (outputs > max_dimension || inputs > max_dimension - outputs)
+			if (output_ids.size() > max_dimension || variable_ids.size() > max_dimension - output_ids.size())
 				throw synthesis_limit("Boolean synthesis supports at most 512 total input and output bits");
-			const size_t count = circuit.nodes.size();
-			if (circuit.inputs.size() != count)
-				throw std::invalid_argument("Invalid synthesis circuit");
-			bdd.tick(count);
-			std::pmr::vector<size_t> columns(count, absent, &memory), forward(count, &memory);
-			for (size_t column = 0; column < inputs; ++column)
-			{
-				bdd.tick();
-				const size_t id = variable_ids[column];
-				if (id >= count || !circuit.nodes[id] || circuit.nodes[id]->operation != '*' ||
-					columns[id] != absent)
-					throw std::invalid_argument("Invalid synthesis input variable");
-				columns[id] = column;
-			}
-			std::pmr::vector<size_t> roots(output_ids.begin(), output_ids.end(), &memory);
-			bdd.tick(requirement_ids.size());
-			roots.insert(roots.end(), requirement_ids.begin(), requirement_ids.end());
-			std::pmr::vector<unsigned char> state(count, &memory);
-			struct frame { size_t id, next; };
-			std::pmr::vector<frame> stack(&memory);
-			for (const size_t root : roots)
-			{
-				bdd.tick();
-				if (root >= count) throw std::invalid_argument("Invalid synthesis root");
-				if (state[root] == 2) continue;
-				stack.push_back({root, 0});
-				state[root] = 1;
-				while (!stack.empty())
-				{
-					bdd.tick();
-					auto& current = stack.back();
-					const size_t id = current.id;
-					if (!circuit.nodes[id]) throw std::invalid_argument("Null synthesis gate");
-					const char operation = static_cast<char>(circuit.nodes[id]->operation);
-					if (operation != '=' && operation != '*' && operation != '!' &&
-						operation != '&' && operation != '|' && operation != '^')
-						throw std::invalid_argument("Unsupported synthesis gate");
-					const size_t arity = dixelu::bitreverse::details::operation_args_count[
-						static_cast<unsigned char>(operation)];
-					if (current.next < arity)
-					{
-						const size_t child = circuit.inputs[id][current.next++];
-						if (child >= count) throw std::invalid_argument("Invalid synthesis child");
-						if (state[child] == 1) throw std::invalid_argument("Cyclic synthesis circuit");
-						if (state[child] == 0) { state[child] = 1; stack.push_back({child, 0}); }
-						continue;
-					}
-					if (operation == '=') forward[id] = circuit.nodes[id]->state != 0;
-					else if (operation == '*')
-					{
-						if (columns[id] == absent)
-							throw std::invalid_argument("Undeclared synthesis input variable");
-						forward[id] = bdd.make(outputs + columns[id], 0, 1);
-					}
-					else if (operation == '!') forward[id] = bdd.negate(forward[circuit.inputs[id][0]]);
-					else forward[id] = bdd.apply(operation,
-						forward[circuit.inputs[id][0]], forward[circuit.inputs[id][1]]);
-					state[id] = 2;
-					stack.pop_back();
-				}
-			}
-			std::vector<size_t> profile_roots;
-			if (statistics)
-				for (const size_t id : roots) profile_roots.push_back(forward[id]);
-			finish_phase(true, profile_roots);
-			begin_phase(synthesis_phase::relation);
-			size_t domain = 1;
-			for (const size_t id : requirement_ids) domain = bdd.apply('&', domain, forward[id]);
-			std::pmr::vector<size_t> complements(&memory);
-			for (const size_t id : output_ids) complements.push_back(bdd.negate(forward[id]));
-			std::pmr::unordered_map<pair_key, size_t, pair_hash> relation_cache(&memory);
-			std::function<size_t(size_t, size_t)> relation = [&](size_t index, size_t subset) -> size_t
-			{
-				bdd.tick();
-				if (subset == 0 || index == outputs) return subset;
-				const pair_key key{index, subset};
-				if (const auto found = relation_cache.find(key); found != relation_cache.end())
-					return found->second;
-				const size_t low_domain = bdd.apply('&', subset, complements[index]);
-				const size_t high_domain = bdd.apply('&', subset, forward[output_ids[index]]);
-				const size_t low = relation(index + 1, low_domain);
-				const size_t high = relation(index + 1, high_domain);
-				const size_t result = bdd.make(index, low, high);
-				if (relation_cache.size() >= options.max_nodes) relation_cache.clear();
-				relation_cache.emplace(key, result);
-				return result;
-			};
+			builder work(circuit, output_ids, variable_ids, requirement_ids, options, bdd, &memory);
+			profile.advance(work.forward(), synthesis_phase::relation);
 			synthesized_plan plan;
-			plan.input_count_ = inputs;
-			plan.output_count_ = outputs;
-			plan.relation_ = relation(0, domain);
-			finish_phase(true, {plan.relation_});
-			begin_phase(synthesis_phase::witness);
-
-			struct witness
-			{
-				size_t valid;
-				std::pmr::vector<size_t> bits;
-				witness(size_t value, size_t width, std::pmr::memory_resource* resource)
-					: valid(value), bits(width, resource) {}
-				witness(const witness& other)
-					: valid(other.valid), bits(other.bits, other.bits.get_allocator()) {}
-				witness(witness&&) = default;
-			};
-			std::pmr::unordered_map<size_t, witness> witness_cache(&memory);
-			std::function<witness(size_t)> synthesize = [&](size_t id) -> witness
-			{
-				bdd.tick(inputs + 1);
-				if (const auto found = witness_cache.find(id); found != witness_cache.end())
-					return found->second;
-				witness result{static_cast<size_t>(id != 0), inputs, &memory};
-				if (id >= 2 && bdd.nodes[id].variable < outputs)
-				{
-					const auto current = bdd.nodes[id];
-					const auto low = synthesize(current.low), high = synthesize(current.high);
-					result.valid = bdd.make(current.variable, low.valid, high.valid);
-					for (size_t bit = 0; bit < inputs; ++bit)
-					{
-						bdd.tick();
-						if (low.valid == 0) result.bits[bit] = high.bits[bit];
-						else if (high.valid == 0) result.bits[bit] = low.bits[bit];
-						else result.bits[bit] = bdd.make(current.variable, low.bits[bit], high.bits[bit]);
-					}
-				}
-				else
-				{
-					// A nonzero input-domain BDD always has a satisfying path.
-					// Prefer low edges and leave skipped variables at zero.
-					for (size_t cursor = id; cursor >= 2;)
-					{
-						bdd.tick();
-						const auto current = bdd.nodes[cursor];
-						const bool high = current.low == 0;
-						result.bits[current.variable - outputs] = high;
-						cursor = high ? current.high : current.low;
-					}
-				}
-				witness_cache.emplace(id, result);
-				return result;
-			};
-			const auto canonical = synthesize(plan.relation_);
+			plan.input_count_ = variable_ids.size();
+			plan.output_count_ = output_ids.size();
+			plan.relation_ = work.relation();
+			profile.advance({plan.relation_}, synthesis_phase::witness);
+			const auto& canonical = work.canonical(plan.relation_);
 			plan.valid_ = canonical.valid;
 			plan.functions_.assign(canonical.bits.begin(), canonical.bits.end());
-			auto plan_roots = plan.functions_;
-			plan_roots.push_back(plan.valid_);
-			plan_roots.push_back(plan.relation_);
-			finish_phase(true, plan_roots);
-			begin_phase(synthesis_phase::compaction);
-			const auto used = reachable(bdd.nodes, plan_roots, &bdd);
-			bdd.tick(bdd.nodes.size());
-			std::pmr::vector<size_t> remap(bdd.nodes.size(), &memory);
-			remap[1] = 1;
-			for (size_t id = 2; id < bdd.nodes.size(); ++id)
-				if (used[id])
-				{
-					const auto current = bdd.nodes[id];
-					remap[id] = plan.nodes_.size();
-					plan.nodes_.push_back({current.variable, remap[current.low], remap[current.high]});
-				}
-			plan.relation_ = remap[plan.relation_];
-			plan.valid_ = remap[plan.valid_];
-			for (auto& function : plan.functions_) function = remap[function];
+			auto roots = plan.functions_;
+			roots.push_back(plan.valid_);
+			roots.push_back(plan.relation_);
+			profile.advance(roots, synthesis_phase::compaction);
+			work.compact(plan, roots);
 			plan.index_functions(&bdd);
-			if (statistics)
-			{
-				statistics->relation_nodes = plan.relation_node_count();
-				statistics->function_nodes = plan.function_node_count();
-			}
-			finish_phase(true, plan_roots);
-			report();
+			profile.finish(roots);
 			return plan;
 		}
 		catch (...)
 		{
-			if (statistics) statistics->failed_phase = phase;
-			finish_phase(false, {});
-			report();
+			profile.fail();
 			throw;
 		}
 	}
@@ -515,7 +562,7 @@ public:
 	size_t output_count() const { return output_count_; }
 	size_t node_count() const { return nodes_.size() - 2; }
 	size_t relation_node_count() const { return relation_nodes_; }
-	size_t function_node_count() const { return function_order_.size(); }
+	size_t function_node_count() const { return function_steps_.size(); }
 	size_t selector_node_count() const { return selector_nodes_; }
 	size_t validity_node_count() const { return validity_nodes_; }
 
@@ -551,8 +598,8 @@ public:
 		return result;
 	}
 
-	// Retain the full topological evaluator as a comparison baseline. It always
-	// evaluates the combined DAG, including selectors for invalid targets.
+	// Evaluates the whole function DAG in schedule order, including selectors
+	// for invalid targets, so the work done does not depend on the target.
 	std::optional<std::vector<bool>> evaluate_schedule(const std::vector<bool>& target,
 		evaluation_statistics* statistics = nullptr) const
 	{
@@ -578,7 +625,7 @@ public:
 	}
 
 	size_t enumerate(const std::vector<bool>& target,
-		const std::function<bool(const std::vector<bool>&)>& callback, size_t maximum = 1) const
+		const std::function<bool(const std::vector<bool>&)>& callback, size_t maximum) const
 	{
 		if (target.size() != output_count_) throw std::invalid_argument("Wrong synthesized target width");
 		if (!callback) throw std::invalid_argument("Missing synthesized enumeration callback");
@@ -612,30 +659,29 @@ public:
 	void save(std::ostream& stream) const
 	{
 		stream << "SYNTHESIZED_PLAN 1 ";
-		for (const size_t value : {input_count_, output_count_, node_count(), relation_, valid_})
-			write_number(stream, value);
+		write_fields(stream, {input_count_, output_count_, node_count(), relation_, valid_});
 		stream.put('\n');
 		for (size_t id = 2; id < nodes_.size(); ++id)
 		{
-			for (const size_t value : {nodes_[id].variable, nodes_[id].low, nodes_[id].high})
-				write_number(stream, value);
+			write_fields(stream, {nodes_[id].variable, nodes_[id].low, nodes_[id].high});
 			stream.put('\n');
 		}
-		for (const size_t value : functions_) write_number(stream, value);
+		write_fields(stream, functions_);
 		stream << "\nEND_SYNTHESIZED_PLAN\n";
 		if (!stream) throw std::runtime_error("Failed to write synthesized plan");
 	}
 
 	static synthesized_plan load(std::istream& stream)
 	{
-		expect(stream, "SYNTHESIZED_PLAN");
-		if (read_number(stream, 1) != 1) throw std::runtime_error("Unsupported synthesized plan version");
+		text_reader<std::runtime_error> reader(stream, "synthesized plan");
+		reader.expect("SYNTHESIZED_PLAN");
+		if (reader.number(1) != 1) throw std::runtime_error("Unsupported synthesized plan version");
 		synthesized_plan plan;
-		plan.input_count_ = read_number(stream, max_dimension);
-		plan.output_count_ = read_number(stream, max_dimension - plan.input_count_);
-		const size_t count = read_number(stream, storage_node_limit);
-		plan.relation_ = read_number(stream, count + 1);
-		plan.valid_ = read_number(stream, count + 1);
+		plan.input_count_ = reader.number(max_dimension);
+		plan.output_count_ = reader.number(max_dimension - plan.input_count_);
+		const size_t count = reader.number(artifact_node_limit);
+		plan.relation_ = reader.number(count + 1);
+		plan.valid_ = reader.number(count + 1);
 		const size_t dimensions = plan.input_count_ + plan.output_count_;
 		if (count && !dimensions) throw std::runtime_error("Decision nodes without synthesis variables");
 		std::unordered_set<decision, decision_hash> unique;
@@ -643,9 +689,9 @@ public:
 		for (size_t index = 0; index < count; ++index)
 		{
 			const size_t id = index + 2;
-			const size_t variable = read_number(stream, dimensions - 1);
-			const size_t low = read_number(stream, id - 1);
-			const size_t high = read_number(stream, id - 1);
+			const size_t variable = reader.number(dimensions - 1);
+			const size_t low = reader.number(id - 1);
+			const size_t high = reader.number(id - 1);
 			const decision current{variable, low, high};
 			if (low == high || plan.nodes_[low].variable <= variable ||
 				plan.nodes_[high].variable <= variable || !unique.insert(current).second)
@@ -653,47 +699,30 @@ public:
 			plan.nodes_.push_back(current);
 		}
 		for (size_t bit = 0; bit < plan.input_count_; ++bit)
-			plan.functions_.push_back(read_number(stream, count + 1));
-		expect(stream, "END_SYNTHESIZED_PLAN");
+			plan.functions_.push_back(reader.number(count + 1));
+		reader.expect("END_SYNTHESIZED_PLAN");
 		auto roots = plan.functions_;
 		roots.push_back(plan.valid_);
 		roots.push_back(plan.relation_);
-		const auto used = reachable(plan.nodes_, roots);
-		if (std::find(used.begin() + 2, used.end(), 0) != used.end())
+		if (reachable_count(plan.nodes_, roots) != count)
 			throw std::runtime_error("Unreachable synthesized decision node");
 		plan.index_functions();
 		return plan;
 	}
 
-	void export_cpp(std::ostream& stream, const std::vector<size_t>& input_columns,
-		const std::vector<bool>& input_constants) const
+	// Emits only the canonical witness and validity DAG; the larger relation
+	// that enumerates alternative witnesses stays out of the header.
+	void export_cpp(std::ostream& stream, const cpp_signature& signature) const
 	{
-		if (input_columns.size() != input_constants.size())
-			throw std::invalid_argument("Invalid synthesized export input layout");
-		for (const size_t column : input_columns)
-			if (column != absent && column >= input_count_)
-				throw std::invalid_argument("Invalid synthesized export input column");
-		// Only the canonical witness and validity DAG are emitted. The larger
-		// relation used to enumerate alternative witnesses is deliberately absent.
-		// to_chars keeps generated C++ independent of the destination stream's
-		// base, locale, boolalpha, precision and other numeric formatting flags.
-		auto number = [](size_t value)
-		{
-			char buffer[32];
-			const auto converted = std::to_chars(buffer, buffer + sizeof(buffer), value);
-			return std::string(buffer, converted.ptr);
-		};
-		stream << "// Generated Boolean inverse; input/target bits retain their declared order.\n"
-			<< "#pragma once\n#include <array>\n#include <cstddef>\n#include <optional>\n\n"
-			<< "inline std::optional<std::array<bool, " << number(input_columns.size()) << ">>\n"
-			<< "bitreverse_inverse(const std::array<bool, " << number(output_count_) << ">& target)\n{\n"
-			<< "  struct decision { std::size_t variable, low, high; };\n"
+		signature.begin(stream, "Generated Boolean inverse; input/target bits retain their declared order.",
+			{"array", "cstddef", "optional"});
+		stream << "  struct decision { std::size_t variable, low, high; };\n"
 			<< "  // Follow only the branches selected by the supplied target.\n"
-			<< "  static constexpr std::array<decision, " << number(function_steps_.size()) << "> schedule{{\n";
+			<< "  static constexpr std::array<decision, " << decimal(function_steps_.size()) << "> schedule{{\n";
 		for (const auto current : function_steps_)
 		{
-			stream << "    {" << number(current.variable) << ", " << number(current.low)
-				<< ", " << number(current.high) << "},\n";
+			stream << "    {" << decimal(current.variable) << ", " << decimal(current.low)
+				<< ", " << decimal(current.high) << "},\n";
 		}
 		stream << "  }};\n"
 			<< "  const auto evaluate = [&target](std::size_t root) {\n"
@@ -701,24 +730,16 @@ public:
 			<< "      const auto step = schedule[root - 2];\n"
 			<< "      root = target[step.variable] ? step.high : step.low;\n"
 			<< "    }\n    return root != 0;\n  };\n"
-			<< "  if (!evaluate(" << number(function_valid_) << ")) return std::nullopt;\n"
-			<< "  static constexpr std::array<std::size_t, " << number(input_count_) << "> roots{{";
+			<< "  if (!evaluate(" << decimal(function_valid_) << ")) return std::nullopt;\n"
+			<< "  static constexpr std::array<std::size_t, " << decimal(input_count_) << "> roots{{";
 		for (size_t bit = 0; bit < input_count_; ++bit)
 		{
 			if (bit) stream << ", ";
-			stream << number(function_results_[bit]);
+			stream << decimal(function_results_[bit]);
 		}
-		stream << "}};\n  std::array<bool, " << number(input_count_) << "> inputs{};\n"
-			<< "  for (std::size_t bit = 0; bit < roots.size(); ++bit) inputs[bit] = evaluate(roots[bit]);\n"
-			<< "  return std::array<bool, " << number(input_columns.size()) << ">{{";
-		for (size_t index = 0; index < input_columns.size(); ++index)
-		{
-			if (index) stream << ", ";
-			if (input_columns[index] == absent) stream << (input_constants[index] ? "true" : "false");
-			else stream << "inputs[" << number(input_columns[index]) << "]";
-		}
-		stream << "}};\n}\n";
-		if (!stream) throw std::runtime_error("Failed to export synthesized inverse");
+		stream << "}};\n  std::array<bool, " << decimal(input_count_) << "> inputs{};\n"
+			<< "  for (std::size_t bit = 0; bit < roots.size(); ++bit) inputs[bit] = evaluate(roots[bit]);\n";
+		signature.end(stream, [&](size_t column) { stream << "inputs[" << decimal(column) << ']'; });
 	}
 };
 
